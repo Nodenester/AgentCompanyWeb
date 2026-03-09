@@ -1,0 +1,675 @@
+@page "/files"
+@using AgentCompanyWeb.Data
+@using AgentCompanyWeb.Data.Models
+@using AgentCompanyEngineer.Services
+@inject IJSRuntime JS
+@inject AgentNetworkService AgentNetwork
+@rendermode InteractiveServer
+
+<PageTitle>Files - Agent Company</PageTitle>
+
+<div class="page-header">
+    <div class="flex items-center gap-4">
+        <h1 class="page-title">Shared Files</h1>
+        <div class="breadcrumb">
+            <button class="breadcrumb-item" @onclick='() => NavigateTo("")'>
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+                    <polyline points="9 22 9 12 15 12 15 22"></polyline>
+                </svg>
+            </button>
+            @foreach (var part in _currentPath.Split('/', StringSplitOptions.RemoveEmptyEntries))
+            {
+                <span class="breadcrumb-sep">/</span>
+                <button class="breadcrumb-item" @onclick="() => NavigateToPartial(part)">@part</button>
+            }
+        </div>
+    </div>
+    <div class="page-actions">
+        <button class="btn btn-secondary" @onclick="() => _showNewFolder = true">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                <line x1="12" y1="11" x2="12" y2="17"></line>
+                <line x1="9" y1="14" x2="15" y2="14"></line>
+            </svg>
+            New Folder
+        </button>
+        <label class="btn btn-primary" for="file-upload">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="17 8 12 3 7 8"></polyline>
+                <line x1="12" y1="3" x2="12" y2="15"></line>
+            </svg>
+            Upload
+        </label>
+        <InputFile id="file-upload" OnChange="HandleFileUpload" multiple style="display: none;" />
+    </div>
+</div>
+
+<div class="files-container">
+    @if (_isLoading)
+    {
+        <div class="loading-state">
+            <div class="spinner"></div>
+            <p>Loading files...</p>
+        </div>
+    }
+    else if (_files.Count == 0)
+    {
+        <div class="empty-state">
+            <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+            </svg>
+            <div class="empty-state-title">No files yet</div>
+            <div class="empty-state-text">Upload files or create folders to share with agents</div>
+        </div>
+    }
+    else
+    {
+        <div class="files-grid">
+            @foreach (var file in _files)
+            {
+                <div class="file-card @(file.IsDirectory ? "folder" : "")" @onclick="() => FileClicked(file)" @ondblclick="async () => await FileDoubleClicked(file)">
+                    <div class="file-icon">
+                        @if (file.IsDirectory)
+                        {
+                            <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                            </svg>
+                        }
+                        else
+                        {
+                            <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                <polyline points="14 2 14 8 20 8"></polyline>
+                            </svg>
+                        }
+                    </div>
+                    <div class="file-name" title="@file.Name">@file.Name</div>
+                    <div class="file-meta">
+                        @if (!file.IsDirectory)
+                        {
+                            <span>@FormatSize(file.Size)</span>
+                        }
+                        <span>@file.ModifiedAt.ToString("MMM d")</span>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+</div>
+
+<!-- Error Toast -->
+@if (!string.IsNullOrEmpty(_error))
+{
+    <div class="error-toast">
+        <span>@_error</span>
+        <button @onclick="() => _error = null">&times;</button>
+    </div>
+}
+
+<!-- New Folder Modal -->
+@if (_showNewFolder)
+{
+    <div class="modal-overlay active" @onclick="() => _showNewFolder = false"></div>
+    <div class="modal-dialog">
+        <div class="modal-header">
+            <span class="modal-title">New Folder</span>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label class="form-label">Folder Name</label>
+                <input type="text" class="form-input" placeholder="Enter folder name" @bind="_newFolderName" @onkeydown="HandleFolderKeyDown" />
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" @onclick="() => _showNewFolder = false">Cancel</button>
+            <button class="btn btn-primary" @onclick="CreateFolder">Create</button>
+        </div>
+    </div>
+}
+
+<!-- File Preview Panel -->
+@if (_selectedFile != null)
+{
+    <div class="modal-overlay active" @onclick="() => _selectedFile = null"></div>
+    <div class="slide-panel active">
+        <div class="slide-panel-header">
+            <span class="slide-panel-title">@_selectedFile.Name</span>
+            <button class="btn btn-ghost btn-icon" @onclick="() => _selectedFile = null">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        </div>
+        <div class="slide-panel-body">
+            <div class="file-preview-info">
+                <div class="info-row">
+                    <span class="info-label">Type</span>
+                    <span class="info-value">@(_selectedFile.IsDirectory ? "Folder" : GetFileType(_selectedFile.Name))</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Size</span>
+                    <span class="info-value">@FormatSize(_selectedFile.Size)</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Modified</span>
+                    <span class="info-value">@_selectedFile.ModifiedAt.ToString("MMM d, yyyy HH:mm")</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Path</span>
+                    <span class="info-value">@_selectedFile.Path</span>
+                </div>
+            </div>
+        </div>
+        <div class="slide-panel-footer">
+            <button class="btn btn-ghost" style="color: var(--danger);" @onclick="DeleteFile">Delete</button>
+            <button class="btn btn-secondary" @onclick="DownloadFile">Download</button>
+            @if (!_selectedFile.IsDirectory)
+            {
+                <button class="btn btn-primary" @onclick="OpenFile">Open</button>
+            }
+        </div>
+    </div>
+}
+
+<style>
+    .breadcrumb {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+    }
+
+    .breadcrumb-item {
+        padding: 4px 8px;
+        background: none;
+        border: none;
+        border-radius: var(--radius-sm);
+        color: var(--text-secondary);
+        cursor: pointer;
+        font-size: 13px;
+        transition: all 0.15s ease;
+    }
+
+    .breadcrumb-item:hover {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+    }
+
+    .breadcrumb-sep {
+        color: var(--text-tertiary);
+    }
+
+    .files-container {
+        margin: 0 32px 32px;
+        background: var(--bg-card);
+        border-radius: var(--radius-xl);
+        box-shadow: var(--shadow-sm);
+        min-height: 500px;
+        padding: 24px;
+    }
+
+    .files-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+        gap: 16px;
+    }
+
+    .file-card {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 16px;
+        border-radius: var(--radius-lg);
+        cursor: pointer;
+        transition: all 0.15s ease;
+        text-align: center;
+    }
+
+    .file-card:hover {
+        background: var(--bg-hover);
+    }
+
+    .file-card.selected {
+        background: var(--bg-active);
+    }
+
+    .file-icon {
+        color: var(--text-tertiary);
+        margin-bottom: 8px;
+    }
+
+    .file-card.folder .file-icon {
+        color: var(--accent);
+    }
+
+    .file-name {
+        font-size: 13px;
+        font-weight: 500;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .file-meta {
+        display: flex;
+        gap: 8px;
+        font-size: 11px;
+        color: var(--text-tertiary);
+        margin-top: 4px;
+    }
+
+    .loading-state, .empty-state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 400px;
+        color: var(--text-tertiary);
+    }
+
+    .empty-state svg {
+        opacity: 0.4;
+        margin-bottom: 16px;
+    }
+
+    .file-preview-info {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+    }
+
+    .info-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .info-label {
+        font-size: 13px;
+        color: var(--text-tertiary);
+    }
+
+    .info-value {
+        font-size: 13px;
+        font-weight: 500;
+    }
+
+    .spinner {
+        width: 32px;
+        height: 32px;
+        border: 3px solid var(--border);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin-bottom: 16px;
+    }
+
+    @@keyframes spin {
+        to { transform: rotate(360deg); }
+    }
+
+    .error-toast {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        background: var(--danger);
+        color: white;
+        padding: 12px 16px;
+        border-radius: var(--radius-md);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        box-shadow: var(--shadow-lg);
+        z-index: 100;
+    }
+
+    .error-toast button {
+        background: none;
+        border: none;
+        color: white;
+        font-size: 18px;
+        cursor: pointer;
+        opacity: 0.8;
+    }
+
+    .error-toast button:hover {
+        opacity: 1;
+    }
+
+    .modal-dialog {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: var(--bg-card);
+        border-radius: var(--radius-xl);
+        box-shadow: var(--shadow-lg);
+        width: 400px;
+        z-index: 101;
+    }
+
+    .modal-header {
+        padding: 20px 24px;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .modal-title {
+        font-size: 17px;
+        font-weight: 600;
+    }
+
+    .modal-body {
+        padding: 24px;
+    }
+
+    .modal-footer {
+        display: flex;
+        justify-content: flex-end;
+        gap: 12px;
+        padding: 16px 24px;
+        border-top: 1px solid var(--border);
+    }
+
+    label.btn {
+        cursor: pointer;
+    }
+</style>
+
+@code {
+    private List<FileItem> _files = new();
+    private string _currentPath = "";
+    private FileItem? _selectedFile = null;
+    private bool _isLoading = true;
+    private bool _showNewFolder = false;
+    private string _newFolderName = "";
+    private string? _error = null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _isLoading = true;
+        StateHasChanged();
+
+        // Try to connect to Agent Network in background with short timeout
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                var connected = await AgentNetwork.ConnectAsync("AgentCompanyWeb");
+                if (connected)
+                {
+                    await InvokeAsync(async () =>
+                    {
+                        await LoadFiles();
+                    });
+                }
+                else
+                {
+                    await InvokeAsync(() =>
+                    {
+                        _isLoading = false;
+                        _error = "Agent Network not available - showing local view";
+                        StateHasChanged();
+                    });
+                }
+            }
+            catch
+            {
+                await InvokeAsync(() =>
+                {
+                    _isLoading = false;
+                    _error = "Agent Network not available";
+                    StateHasChanged();
+                });
+            }
+        });
+    }
+
+    private async Task LoadFiles()
+    {
+        _isLoading = true;
+        _error = null;
+        StateHasChanged();
+
+        try
+        {
+            // Load from Agent Network shared filesystem
+            var networkFiles = await AgentNetwork.ListFilesAsync(_currentPath);
+
+            _files = networkFiles.Select(f => new FileItem
+            {
+                Name = f.Name,
+                Path = f.Path,
+                IsDirectory = f.IsDirectory,
+                Size = f.Size,
+                ModifiedAt = f.ModifiedAt
+            }).OrderByDescending(f => f.IsDirectory).ThenBy(f => f.Name).ToList();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load files: {ex.Message}";
+            _files = new();
+        }
+
+        _isLoading = false;
+        StateHasChanged();
+    }
+
+    private async Task NavigateTo(string path)
+    {
+        _currentPath = path;
+        await LoadFiles();
+    }
+
+    private async Task NavigateToPartial(string part)
+    {
+        var parts = _currentPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var index = Array.IndexOf(parts, part);
+        if (index >= 0)
+        {
+            _currentPath = string.Join("/", parts.Take(index + 1));
+            await LoadFiles();
+        }
+    }
+
+    private void FileClicked(FileItem file)
+    {
+        _selectedFile = file;
+    }
+
+    private async Task FileDoubleClicked(FileItem file)
+    {
+        if (file.IsDirectory)
+        {
+            _currentPath = file.Path.TrimStart('/');
+            await LoadFiles();
+            _selectedFile = null;
+        }
+    }
+
+    private async Task CreateFolder()
+    {
+        if (string.IsNullOrWhiteSpace(_newFolderName))
+        {
+            _showNewFolder = true;
+            return;
+        }
+
+        try
+        {
+            var folderPath = string.IsNullOrEmpty(_currentPath)
+                ? _newFolderName
+                : $"{_currentPath}/{_newFolderName}";
+
+            // Create folder by writing a placeholder file (Agent Network creates directories automatically)
+            await AgentNetwork.WriteFileAsync($"{folderPath}/.keep", "");
+
+            _newFolderName = "";
+            _showNewFolder = false;
+            await LoadFiles();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to create folder: {ex.Message}";
+        }
+    }
+
+    private async Task UploadFile()
+    {
+        // Trigger file input via JavaScript
+        await JS.InvokeVoidAsync("eval", "document.getElementById('file-upload').click()");
+    }
+
+    private async Task HandleFileUpload(InputFileChangeEventArgs e)
+    {
+        try
+        {
+            foreach (var file in e.GetMultipleFiles(10))
+            {
+                using var stream = file.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024); // 50MB max
+                using var reader = new StreamReader(stream);
+                var content = await reader.ReadToEndAsync();
+
+                var filePath = string.IsNullOrEmpty(_currentPath)
+                    ? file.Name
+                    : $"{_currentPath}/{file.Name}";
+
+                await AgentNetwork.WriteFileAsync(filePath, content);
+            }
+
+            await LoadFiles();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to upload file: {ex.Message}";
+        }
+    }
+
+    private async Task DeleteFile()
+    {
+        if (_selectedFile == null) return;
+
+        try
+        {
+            var success = await AgentNetwork.DeleteFileAsync(_selectedFile.Path);
+            if (success)
+            {
+                _selectedFile = null;
+                await LoadFiles();
+            }
+            else
+            {
+                _error = "Failed to delete file";
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to delete: {ex.Message}";
+        }
+    }
+
+    private async Task DownloadFile()
+    {
+        if (_selectedFile == null || _selectedFile.IsDirectory) return;
+
+        try
+        {
+            var content = await AgentNetwork.ReadFileAsync(_selectedFile.Path);
+            if (content != null)
+            {
+                // Create a data URL and trigger download
+                var bytes = System.Text.Encoding.UTF8.GetBytes(content);
+                var base64 = Convert.ToBase64String(bytes);
+                var dataUrl = $"data:application/octet-stream;base64,{base64}";
+                await JS.InvokeVoidAsync("eval", $@"
+                    var a = document.createElement('a');
+                    a.href = '{dataUrl}';
+                    a.download = '{_selectedFile.Name.Replace("'", "\\'")}';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                ");
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to download: {ex.Message}";
+        }
+    }
+
+    private async Task OpenFile()
+    {
+        if (_selectedFile == null || _selectedFile.IsDirectory) return;
+
+        try
+        {
+            var content = await AgentNetwork.ReadFileAsync(_selectedFile.Path);
+            if (content != null)
+            {
+                // For now, just display content in an alert (could open in a modal viewer)
+                await JS.InvokeVoidAsync("alert", $"File content:\n\n{content.Substring(0, Math.Min(1000, content.Length))}...");
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to open: {ex.Message}";
+        }
+    }
+
+    private async Task HandleFolderKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await CreateFolder();
+        }
+        else if (e.Key == "Escape")
+        {
+            _showNewFolder = false;
+        }
+    }
+
+    private string FormatSize(long bytes)
+    {
+        if (bytes == 0) return "—";
+        string[] sizes = ["B", "KB", "MB", "GB"];
+        int order = 0;
+        double size = bytes;
+        while (size >= 1024 && order < sizes.Length - 1)
+        {
+            order++;
+            size /= 1024;
+        }
+        return $"{size:0.#} {sizes[order]}";
+    }
+
+    private string GetFileType(string name)
+    {
+        var ext = Path.GetExtension(name).ToLowerInvariant();
+        return ext switch
+        {
+            ".md" => "Markdown",
+            ".json" => "JSON",
+            ".txt" => "Text",
+            ".cs" => "C# Source",
+            ".js" => "JavaScript",
+            ".ts" => "TypeScript",
+            ".py" => "Python",
+            ".html" => "HTML",
+            ".css" => "CSS",
+            _ => "File"
+        };
+    }
+
+    private class FileItem
+    {
+        public string Name { get; set; } = "";
+        public string Path { get; set; } = "";
+        public bool IsDirectory { get; set; }
+        public long Size { get; set; }
+        public DateTime ModifiedAt { get; set; }
+    }
+}

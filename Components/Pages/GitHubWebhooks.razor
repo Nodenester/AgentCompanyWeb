@@ -1,0 +1,868 @@
+@page "/webhooks/github"
+@page "/webhooks/github/{GroupId:int}"
+@using AgentCompanyWeb.Data
+@using AgentCompanyWeb.Data.Models
+@using AgentCompanyWeb.Services
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject GitHubWebhookService WebhookService
+@inject NavigationManager NavigationManager
+@rendermode InteractiveServer
+
+<PageTitle>GitHub Webhooks - Agent Company</PageTitle>
+
+<div class="page-header">
+    <div class="page-header-left">
+        <h1 class="page-title">GitHub Webhooks</h1>
+        @if (_groups.Count > 0)
+        {
+            <select class="form-select group-select" @bind="_selectedGroupId" @bind:after="LoadData">
+                @foreach (var group in _groups)
+                {
+                    <option value="@group.Id">@group.Name</option>
+                }
+            </select>
+        }
+    </div>
+    <div class="page-actions">
+        <button class="btn btn-primary" @onclick="OpenCreatePanel">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+            New Webhook
+        </button>
+    </div>
+</div>
+
+<div class="page-body">
+    <!-- Info Banner -->
+    <div class="info-banner">
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"></circle>
+            <path d="M9 9h.01M15 9h.01M9.5 15.5c.5.5 1.5 1 2.5 1s2-.5 2.5-1"></path>
+        </svg>
+        <div>
+            <strong>How it works:</strong> Create a webhook here, then add the webhook URL to your GitHub repository settings.
+            When GitHub events occur (push, PR, issues), your agents will be automatically notified.
+        </div>
+    </div>
+
+    @if (_loading)
+    {
+        <div class="loading-state">
+            <div class="spinner"></div>
+            <span>Loading webhooks...</span>
+        </div>
+    }
+    else if (_groups.Count == 0)
+    {
+        <div class="empty-state">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path>
+            </svg>
+            <div class="empty-state-title">No groups yet</div>
+            <div class="empty-state-text">Create a group first to add GitHub webhooks.</div>
+            <button class="btn btn-primary mt-4" @onclick="GoToGroups">Go to Groups</button>
+        </div>
+    }
+    else if (_webhooks.Count == 0)
+    {
+        <div class="empty-state">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path>
+            </svg>
+            <div class="empty-state-title">No GitHub webhooks</div>
+            <div class="empty-state-text">Create a webhook to trigger agents when GitHub events occur.</div>
+            <button class="btn btn-primary mt-4" @onclick="OpenCreatePanel">Create Webhook</button>
+        </div>
+    }
+    else
+    {
+        <div class="webhook-list">
+            @foreach (var webhook in _webhooks)
+            {
+                <div class="webhook-card @(webhook.Enabled ? "" : "disabled")" @onclick="() => OpenEditPanel(webhook)">
+                    <div class="webhook-card-header">
+                        <div class="webhook-card-title">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path>
+                            </svg>
+                            <span class="webhook-name">@webhook.Name</span>
+                        </div>
+                        <label class="toggle" @onclick:stopPropagation="true">
+                            <input type="checkbox" checked="@webhook.Enabled" @onchange="() => ToggleWebhook(webhook)" />
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div class="webhook-card-body">
+                        <div class="webhook-repo">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                            </svg>
+                            <span>@webhook.Repository</span>
+                        </div>
+                        <div class="webhook-events">
+                            @foreach (var evt in GetEventBadges(webhook.Events))
+                            {
+                                <span class="event-badge">@evt</span>
+                            }
+                        </div>
+                        <div class="webhook-target">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                                <circle cx="12" cy="7" r="4"></circle>
+                            </svg>
+                            <span>@GetTargetName(webhook)</span>
+                        </div>
+                    </div>
+                    <div class="webhook-card-footer">
+                        <span class="webhook-stat">@webhook.TriggerCount triggers</span>
+                        @if (webhook.LastTriggeredAt.HasValue)
+                        {
+                            <span class="webhook-stat">Last: @GetRelativeTime(webhook.LastTriggeredAt.Value)</span>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+    }
+
+    <!-- Recent Logs -->
+    @if (_logs.Count > 0)
+    {
+        <h2 class="section-title">Recent Activity</h2>
+        <div class="log-list">
+            <table class="log-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Event</th>
+                        <th>Repository</th>
+                        <th>Sender</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var log in _logs.Take(20))
+                    {
+                        <tr class="@(log.Status == JobExecutionStatus.Failed ? "error" : "")">
+                            <td>@log.ReceivedAt.ToLocalTime().ToString("MMM d, HH:mm")</td>
+                            <td>
+                                <span class="event-badge">@log.EventType</span>
+                                @if (!string.IsNullOrEmpty(log.EventAction))
+                                {
+                                    <span class="event-action">@log.EventAction</span>
+                                }
+                            </td>
+                            <td>@log.Repository</td>
+                            <td>@log.Sender</td>
+                            <td>
+                                <span class="status-badge @log.Status.ToString().ToLower()">@log.Status</span>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+<!-- Webhook Panel -->
+<div class="modal-overlay @(_panelOpen ? "active" : "")" @onclick="ClosePanel"></div>
+<div class="slide-panel @(_panelOpen ? "active" : "")">
+    <div class="slide-panel-header">
+        <span class="slide-panel-title">@(_editingWebhook != null ? "Edit GitHub Webhook" : "New GitHub Webhook")</span>
+        <button class="btn btn-ghost btn-icon" @onclick="ClosePanel">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+        </button>
+    </div>
+    <div class="slide-panel-body">
+        <div class="form-group">
+            <label class="form-label">Name</label>
+            <input type="text" class="form-input" placeholder="e.g., Main Repo PR Handler" @bind="_form.Name" />
+        </div>
+        <div class="form-group">
+            <label class="form-label">Repository</label>
+            <input type="text" class="form-input" placeholder="owner/repo" @bind="_form.Repository" />
+            <span class="form-hint">e.g., octocat/Hello-World</span>
+        </div>
+
+        <div class="form-divider"></div>
+
+        <div class="form-group">
+            <label class="form-label">Events to Listen For</label>
+            <div class="event-picker">
+                @foreach (var evt in _availableEvents)
+                {
+                    <label class="event-option">
+                        <input type="checkbox" checked="@IsEventSelected(evt)" @onchange="() => ToggleEvent(evt)" />
+                        <span>@evt</span>
+                    </label>
+                }
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Branch Filter (optional)</label>
+            <input type="text" class="form-input" placeholder="main|develop|feature/.*" @bind="_form.BranchFilter" />
+            <span class="form-hint">Regex pattern. Leave empty to match all branches.</span>
+        </div>
+
+        <div class="form-divider"></div>
+
+        <div class="form-group">
+            <label class="form-label">Action</label>
+            <select class="form-select" @bind="_form.ActionType">
+                <option value="@JobActionType.PromptAgent">Prompt Agent</option>
+                <option value="@JobActionType.SendDirectMessage">Send Direct Message</option>
+                <option value="@JobActionType.SendTeamMessage">Send Team Message</option>
+            </select>
+        </div>
+
+        @if (_form.ActionType == JobActionType.PromptAgent || _form.ActionType == JobActionType.SendDirectMessage)
+        {
+            <div class="form-group">
+                <label class="form-label">Target Agent</label>
+                <select class="form-select" @bind="_form.TargetAgentId">
+                    <option value="">Select an agent...</option>
+                    @foreach (var agent in _agents)
+                    {
+                        <option value="@agent.Id">@agent.Name</option>
+                    }
+                </select>
+            </div>
+        }
+
+        @if (_form.ActionType == JobActionType.SendTeamMessage)
+        {
+            <div class="form-group">
+                <label class="form-label">Target Team</label>
+                <select class="form-select" @bind="_form.TargetTeamId">
+                    <option value="">Select a team...</option>
+                    @foreach (var team in _teams)
+                    {
+                        <option value="@team.Id">@team.Name</option>
+                    }
+                </select>
+            </div>
+        }
+
+        <div class="form-group">
+            <label class="form-label">Message Template</label>
+            <textarea class="form-textarea" rows="6" placeholder="Enter the message to send..." @bind="_form.MessageTemplate"></textarea>
+            <span class="form-hint">Variables: {event}, {action}, {repo}, {branch}, {sender}, {url}, {title}, {body}, {number}, {commits}</span>
+        </div>
+
+        <div class="form-divider"></div>
+
+        @if (_editingWebhook != null)
+        {
+            <div class="webhook-url-section">
+                <label class="form-label">Webhook URL</label>
+                <div class="webhook-url-box">
+                    <code>@GetWebhookUrl(_editingWebhook)</code>
+                    <button class="btn btn-sm btn-ghost" @onclick="CopyWebhookUrl" title="Copy URL">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                        </svg>
+                    </button>
+                </div>
+                <span class="form-hint">Add this URL to your GitHub repository: Settings > Webhooks > Add webhook</span>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Webhook Secret</label>
+                <div class="secret-box">
+                    <code>@(_showSecret ? _editingWebhook.WebhookSecret : "••••••••••••••••")</code>
+                    <button class="btn btn-sm btn-ghost" @onclick="ToggleSecretVisibility">
+                        @if (_showSecret)
+                        {
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                                <line x1="1" y1="1" x2="23" y2="23"></line>
+                            </svg>
+                        }
+                        else
+                        {
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                <circle cx="12" cy="12" r="3"></circle>
+                            </svg>
+                        }
+                    </button>
+                </div>
+                <span class="form-hint">Add this secret in GitHub when creating the webhook for signature verification.</span>
+            </div>
+        }
+    </div>
+    <div class="slide-panel-footer">
+        @if (_editingWebhook != null)
+        {
+            <button class="btn btn-ghost danger" @onclick="DeleteWebhook">Delete</button>
+        }
+        <button class="btn btn-secondary" @onclick="ClosePanel">Cancel</button>
+        <button class="btn btn-primary" @onclick="SaveWebhook" disabled="@_saving">
+            @(_saving ? "Saving..." : "Save")
+        </button>
+    </div>
+</div>
+
+<style>
+    .info-banner {
+        display: flex;
+        gap: 12px;
+        padding: 16px;
+        background: rgba(0, 113, 227, 0.1);
+        border: 1px solid rgba(0, 113, 227, 0.2);
+        border-radius: var(--radius-lg);
+        margin-bottom: 24px;
+        color: var(--text-secondary);
+    }
+
+    .info-banner svg {
+        flex-shrink: 0;
+        color: var(--accent);
+    }
+
+    .webhook-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+        gap: 16px;
+    }
+
+    .webhook-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border-light);
+        border-radius: var(--radius-lg);
+        padding: 16px;
+        cursor: pointer;
+        transition: all var(--transition-fast);
+    }
+
+    .webhook-card:hover {
+        border-color: var(--border-medium);
+        box-shadow: var(--shadow-sm);
+    }
+
+    .webhook-card.disabled {
+        opacity: 0.6;
+    }
+
+    .webhook-card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+    }
+
+    .webhook-card-title {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .webhook-card-title svg {
+        color: var(--text-tertiary);
+    }
+
+    .webhook-name {
+        font-weight: 600;
+        color: var(--text-primary);
+    }
+
+    .webhook-card-body {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        margin-bottom: 12px;
+    }
+
+    .webhook-repo, .webhook-target {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        color: var(--text-secondary);
+    }
+
+    .webhook-events {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+
+    .event-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        background: rgba(147, 51, 234, 0.1);
+        color: rgb(147, 51, 234);
+        border-radius: var(--radius-full);
+        font-size: 11px;
+    }
+
+    .event-action {
+        color: var(--text-tertiary);
+        font-size: 12px;
+        margin-left: 4px;
+    }
+
+    .webhook-card-footer {
+        display: flex;
+        gap: 16px;
+        padding-top: 12px;
+        border-top: 1px solid var(--border-light);
+        font-size: 12px;
+    }
+
+    .webhook-stat {
+        color: var(--text-tertiary);
+    }
+
+    .event-picker {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .event-option {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 12px;
+        background: var(--bg-secondary);
+        border-radius: var(--radius-md);
+        cursor: pointer;
+        font-size: 13px;
+        transition: all var(--transition-fast);
+    }
+
+    .event-option:has(input:checked) {
+        background: rgba(147, 51, 234, 0.15);
+        color: rgb(147, 51, 234);
+    }
+
+    .event-option input {
+        display: none;
+    }
+
+    .webhook-url-section, .form-group:has(.secret-box) {
+        margin-bottom: 16px;
+    }
+
+    .webhook-url-box, .secret-box {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px;
+        background: var(--bg-secondary);
+        border-radius: var(--radius-md);
+        margin-top: 4px;
+    }
+
+    .webhook-url-box code, .secret-box code {
+        flex: 1;
+        font-size: 12px;
+        word-break: break-all;
+        color: var(--text-secondary);
+    }
+
+    .section-title {
+        font-size: 16px;
+        font-weight: 600;
+        margin: 32px 0 16px;
+        color: var(--text-primary);
+    }
+
+    .toggle {
+        position: relative;
+        display: inline-block;
+        width: 40px;
+        height: 22px;
+    }
+
+    .toggle input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+    }
+
+    .toggle-slider {
+        position: absolute;
+        cursor: pointer;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: var(--bg-secondary);
+        transition: 0.2s;
+        border-radius: 22px;
+    }
+
+    .toggle-slider:before {
+        position: absolute;
+        content: "";
+        height: 16px;
+        width: 16px;
+        left: 3px;
+        bottom: 3px;
+        background-color: white;
+        transition: 0.2s;
+        border-radius: 50%;
+    }
+
+    .toggle input:checked + .toggle-slider {
+        background-color: var(--accent);
+    }
+
+    .toggle input:checked + .toggle-slider:before {
+        transform: translateX(18px);
+    }
+
+    .form-divider {
+        height: 1px;
+        background: var(--border-light);
+        margin: 20px 0;
+    }
+
+    .form-textarea {
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid var(--border-light);
+        border-radius: var(--radius-md);
+        background: var(--bg-card);
+        color: var(--text-primary);
+        font-size: 14px;
+        resize: vertical;
+        font-family: monospace;
+    }
+
+    .form-textarea:focus {
+        outline: none;
+        border-color: var(--accent);
+    }
+
+    .form-hint {
+        font-size: 12px;
+        color: var(--text-tertiary);
+        margin-top: 4px;
+    }
+
+    .btn.danger {
+        color: var(--danger);
+        margin-right: auto;
+    }
+
+    .log-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+
+    .log-table th,
+    .log-table td {
+        padding: 12px;
+        text-align: left;
+        border-bottom: 1px solid var(--border-light);
+    }
+
+    .log-table th {
+        font-weight: 500;
+        color: var(--text-secondary);
+        font-size: 12px;
+        text-transform: uppercase;
+    }
+
+    .log-table tr.error td {
+        background: rgba(239, 68, 68, 0.05);
+    }
+
+    .status-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: var(--radius-full);
+        font-size: 11px;
+    }
+
+    .status-badge.success {
+        background: rgba(16, 185, 129, 0.1);
+        color: var(--success);
+    }
+
+    .status-badge.failed {
+        background: rgba(239, 68, 68, 0.1);
+        color: var(--danger);
+    }
+
+    .status-badge.pending, .status-badge.running {
+        background: rgba(245, 158, 11, 0.1);
+        color: rgb(245, 158, 11);
+    }
+
+    .loading-state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        padding: 48px;
+        color: var(--text-secondary);
+    }
+
+    .spinner {
+        width: 24px;
+        height: 24px;
+        border: 2px solid var(--border-light);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+    }
+
+    @@keyframes spin {
+        to { transform: rotate(360deg); }
+    }
+
+    .page-header-left {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+    }
+
+    .group-select {
+        min-width: 180px;
+    }
+</style>
+
+@code {
+    [Parameter]
+    public int? GroupId { get; set; }
+
+    private List<Group> _groups = new();
+    private List<Agent> _agents = new();
+    private List<Team> _teams = new();
+    private List<GitHubWebhook> _webhooks = new();
+    private List<GitHubWebhookLog> _logs = new();
+
+    private int _selectedGroupId;
+    private bool _loading = true;
+    private bool _saving = false;
+    private bool _panelOpen = false;
+    private bool _showSecret = false;
+    private GitHubWebhook? _editingWebhook = null;
+
+    private WebhookForm _form = new();
+    private HashSet<string> _selectedEvents = new();
+
+    private readonly string[] _availableEvents = new[]
+    {
+        "push", "pull_request", "issues", "issue_comment",
+        "create", "delete", "release", "workflow_run",
+        "check_run", "deployment_status"
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _groups = await db.Groups.OrderBy(g => g.Name).ToListAsync();
+
+        if (_groups.Count > 0)
+        {
+            _selectedGroupId = GroupId ?? _groups.First().Id;
+            await LoadData();
+        }
+        else
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task LoadData()
+    {
+        _loading = true;
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        _agents = await db.Agents
+            .Where(a => a.GroupId == _selectedGroupId)
+            .OrderBy(a => a.Name)
+            .ToListAsync();
+
+        _teams = await db.Teams
+            .Where(t => t.GroupId == _selectedGroupId)
+            .OrderBy(t => t.Name)
+            .ToListAsync();
+
+        _webhooks = await WebhookService.GetWebhooksByGroupAsync(_selectedGroupId);
+        _logs = await WebhookService.GetRecentLogsAsync(_selectedGroupId, 50);
+
+        _loading = false;
+    }
+
+    private void GoToGroups() => NavigationManager.NavigateTo("/groups");
+
+    private void OpenCreatePanel()
+    {
+        _editingWebhook = null;
+        _form = new WebhookForm
+        {
+            MessageTemplate = "GitHub {event} from {sender} on {repo}:\n\n{title}\n\nBranch: {branch}\nURL: {url}"
+        };
+        _selectedEvents = new HashSet<string> { "push", "pull_request" };
+        _showSecret = false;
+        _panelOpen = true;
+    }
+
+    private void OpenEditPanel(GitHubWebhook webhook)
+    {
+        _editingWebhook = webhook;
+        _form = new WebhookForm
+        {
+            Name = webhook.Name,
+            Repository = webhook.Repository,
+            BranchFilter = webhook.BranchFilter ?? "",
+            ActionType = webhook.ActionType,
+            TargetAgentId = webhook.TargetAgentId?.ToString() ?? "",
+            TargetTeamId = webhook.TargetTeamId?.ToString() ?? "",
+            MessageTemplate = webhook.MessageTemplate,
+            CooldownSeconds = webhook.CooldownSeconds
+        };
+        _selectedEvents = webhook.Events.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToHashSet();
+        _showSecret = false;
+        _panelOpen = true;
+    }
+
+    private void ClosePanel()
+    {
+        _panelOpen = false;
+        _editingWebhook = null;
+    }
+
+    private async Task SaveWebhook()
+    {
+        if (string.IsNullOrWhiteSpace(_form.Name) || string.IsNullOrWhiteSpace(_form.Repository))
+            return;
+
+        if (_selectedEvents.Count == 0)
+        {
+            _selectedEvents.Add("push");
+        }
+
+        _saving = true;
+
+        try
+        {
+            if (_editingWebhook != null)
+            {
+                await WebhookService.UpdateWebhookAsync(_editingWebhook.Id, w =>
+                {
+                    ApplyForm(w);
+                });
+            }
+            else
+            {
+                var webhook = new GitHubWebhook { GroupId = _selectedGroupId };
+                ApplyForm(webhook);
+                await WebhookService.CreateWebhookAsync(webhook);
+            }
+
+            await LoadData();
+            ClosePanel();
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private void ApplyForm(GitHubWebhook webhook)
+    {
+        webhook.Name = _form.Name;
+        webhook.Repository = _form.Repository;
+        webhook.Events = string.Join(",", _selectedEvents);
+        webhook.BranchFilter = string.IsNullOrWhiteSpace(_form.BranchFilter) ? null : _form.BranchFilter;
+        webhook.ActionType = _form.ActionType;
+        webhook.TargetAgentId = int.TryParse(_form.TargetAgentId, out var agentId) ? agentId : null;
+        webhook.TargetTeamId = int.TryParse(_form.TargetTeamId, out var teamId) ? teamId : null;
+        webhook.MessageTemplate = _form.MessageTemplate;
+        webhook.CooldownSeconds = _form.CooldownSeconds;
+    }
+
+    private async Task DeleteWebhook()
+    {
+        if (_editingWebhook == null) return;
+
+        await WebhookService.DeleteWebhookAsync(_editingWebhook.Id);
+        await LoadData();
+        ClosePanel();
+    }
+
+    private async Task ToggleWebhook(GitHubWebhook webhook)
+    {
+        await WebhookService.ToggleWebhookAsync(webhook.Id, !webhook.Enabled);
+        webhook.Enabled = !webhook.Enabled;
+    }
+
+    private bool IsEventSelected(string evt) => _selectedEvents.Contains(evt);
+
+    private void ToggleEvent(string evt)
+    {
+        if (_selectedEvents.Contains(evt))
+            _selectedEvents.Remove(evt);
+        else
+            _selectedEvents.Add(evt);
+    }
+
+    private void ToggleSecretVisibility()
+    {
+        _showSecret = !_showSecret;
+    }
+
+    private string GetWebhookUrl(GitHubWebhook webhook)
+    {
+        var baseUrl = NavigationManager.BaseUri.TrimEnd('/');
+        return $"{baseUrl}/api/webhooks/github/{webhook.Id}";
+    }
+
+    private void CopyWebhookUrl()
+    {
+        // JavaScript interop would be needed for actual clipboard copy
+        // For now, just toggle visibility
+    }
+
+    private string[] GetEventBadges(string events)
+    {
+        if (events == "*") return new[] { "all events" };
+        return events.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Take(4).ToArray();
+    }
+
+    private string GetTargetName(GitHubWebhook webhook)
+    {
+        if (webhook.TargetAgent != null) return $"Agent: {webhook.TargetAgent.Name}";
+        if (webhook.TargetTeam != null) return $"Team: {webhook.TargetTeam.Name}";
+        return webhook.ActionType.ToString();
+    }
+
+    private string GetRelativeTime(DateTime utcTime)
+    {
+        var diff = DateTime.UtcNow - utcTime;
+        if (diff.TotalMinutes < 1) return "just now";
+        if (diff.TotalMinutes < 60) return $"{(int)diff.TotalMinutes}m ago";
+        if (diff.TotalHours < 24) return $"{(int)diff.TotalHours}h ago";
+        return $"{(int)diff.TotalDays}d ago";
+    }
+
+    private class WebhookForm
+    {
+        public string Name { get; set; } = "";
+        public string Repository { get; set; } = "";
+        public string BranchFilter { get; set; } = "";
+        public JobActionType ActionType { get; set; } = JobActionType.PromptAgent;
+        public string TargetAgentId { get; set; } = "";
+        public string TargetTeamId { get; set; } = "";
+        public string MessageTemplate { get; set; } = "";
+        public int CooldownSeconds { get; set; } = 0;
+    }
+}

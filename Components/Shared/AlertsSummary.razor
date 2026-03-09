@@ -1,0 +1,306 @@
+@using AgentCompanyWeb.Data
+@using AgentCompanyWeb.Data.Models
+@using Microsoft.EntityFrameworkCore
+@using Microsoft.AspNetCore.SignalR.Client
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Nav
+@implements IAsyncDisposable
+
+<div class="alerts-summary @(_alerts.Count > 0 ? "has-alerts" : "")">
+    <div class="alerts-header">
+        <h3 class="alerts-title">Alerts</h3>
+        @if (_alerts.Count > 0)
+        {
+            <span class="alerts-badge">@_alerts.Count</span>
+        }
+    </div>
+    <div class="alerts-content">
+        @if (_alerts.Count == 0)
+        {
+            <div class="alerts-empty">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                    <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                </svg>
+                <span>All systems operational</span>
+            </div>
+        }
+        else
+        {
+            @foreach (var alert in _alerts.Take(5))
+            {
+                <div class="alert-item alert-@alert.Severity.ToString().ToLower()" @onclick="() => HandleAlertClick(alert)">
+                    <div class="alert-icon">
+                        @if (alert.Severity == AlertSeverity.Error)
+                        {
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <line x1="15" y1="9" x2="9" y2="15"></line>
+                                <line x1="9" y1="9" x2="15" y2="15"></line>
+                            </svg>
+                        }
+                        else
+                        {
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                                <line x1="12" y1="9" x2="12" y2="13"></line>
+                                <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                            </svg>
+                        }
+                    </div>
+                    <div class="alert-content">
+                        <span class="alert-message">@alert.Message</span>
+                        <span class="alert-source">@alert.Source</span>
+                    </div>
+                </div>
+            }
+            @if (_alerts.Count > 5)
+            {
+                <button class="alerts-view-all" @onclick="NavigateToMonitor">
+                    View All (@_alerts.Count)
+                </button>
+            }
+        }
+    </div>
+</div>
+
+<style>
+    .alerts-summary {
+        background: var(--bg-card);
+        border-radius: var(--radius-lg);
+        border: 1px solid var(--border-light);
+        overflow: hidden;
+    }
+
+    .alerts-summary.has-alerts {
+        border-color: rgba(255, 59, 48, 0.3);
+    }
+
+    .alerts-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border-light);
+    }
+
+    .alerts-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin: 0;
+    }
+
+    .alerts-badge {
+        background: var(--danger);
+        color: white;
+        font-size: 10px;
+        font-weight: 600;
+        padding: 2px 6px;
+        border-radius: var(--radius-full);
+        min-width: 18px;
+        text-align: center;
+    }
+
+    .alerts-content {
+        padding: 8px;
+    }
+
+    .alerts-empty {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 24px;
+        color: var(--success);
+    }
+
+    .alerts-empty svg {
+        opacity: 0.6;
+    }
+
+    .alerts-empty span {
+        font-size: 12px;
+    }
+
+    .alert-item {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 10px 12px;
+        border-radius: var(--radius-md);
+        cursor: pointer;
+        transition: background 0.15s ease;
+    }
+
+    .alert-item:hover {
+        background: var(--bg-hover);
+    }
+
+    .alert-icon {
+        flex-shrink: 0;
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .alert-error .alert-icon {
+        background: rgba(255, 59, 48, 0.1);
+        color: var(--danger);
+    }
+
+    .alert-warning .alert-icon {
+        background: rgba(255, 159, 10, 0.1);
+        color: var(--warning);
+    }
+
+    .alert-content {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .alert-message {
+        display: block;
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--text-primary);
+        margin-bottom: 2px;
+    }
+
+    .alert-source {
+        font-size: 11px;
+        color: var(--text-tertiary);
+    }
+
+    .alerts-view-all {
+        width: 100%;
+        padding: 8px;
+        background: var(--bg-hover);
+        border: none;
+        border-radius: var(--radius-md);
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--accent);
+        cursor: pointer;
+        margin-top: 4px;
+        transition: background 0.15s ease;
+    }
+
+    .alerts-view-all:hover {
+        background: var(--bg-active);
+    }
+</style>
+
+@code {
+    private List<AlertItem> _alerts = new();
+    private HubConnection? _hubConnection;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAlerts();
+        await ConnectToSignalR();
+    }
+
+    private async Task LoadAlerts()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        _alerts.Clear();
+
+        // Load agents with errors
+        var errorAgents = await db.Agents
+            .Where(a => a.Status == AgentStatus.Error)
+            .ToListAsync();
+
+        foreach (var agent in errorAgents)
+        {
+            _alerts.Add(new AlertItem
+            {
+                Severity = AlertSeverity.Error,
+                Message = "Agent error",
+                Source = agent.Name,
+                AgentId = agent.Id
+            });
+        }
+
+        // Check for offline agents that were recently active
+        var recentlyOffline = await db.Agents
+            .Where(a => a.Status == AgentStatus.Offline &&
+                        a.LastActivityAt > DateTime.UtcNow.AddMinutes(-30))
+            .ToListAsync();
+
+        foreach (var agent in recentlyOffline)
+        {
+            _alerts.Add(new AlertItem
+            {
+                Severity = AlertSeverity.Warning,
+                Message = "Agent went offline",
+                Source = agent.Name,
+                AgentId = agent.Id
+            });
+        }
+
+        // Sort by severity (errors first) then by source
+        _alerts = _alerts.OrderBy(a => a.Severity).ThenBy(a => a.Source).ToList();
+    }
+
+    private async Task ConnectToSignalR()
+    {
+        try
+        {
+            _hubConnection = new HubConnectionBuilder()
+                .WithUrl(Nav.ToAbsoluteUri("/hubs/agentnetwork"))
+                .WithAutomaticReconnect()
+                .Build();
+
+            _hubConnection.On<dynamic>("AgentStatusChanged", async (status) =>
+            {
+                await InvokeAsync(async () =>
+                {
+                    await LoadAlerts();
+                    StateHasChanged();
+                });
+            });
+
+            await _hubConnection.StartAsync();
+        }
+        catch { }
+    }
+
+    private void HandleAlertClick(AlertItem alert)
+    {
+        if (alert.AgentId.HasValue)
+        {
+            Nav.NavigateTo($"/agent/{alert.AgentId}");
+        }
+    }
+
+    private void NavigateToMonitor() => Nav.NavigateTo("/monitor");
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_hubConnection != null)
+        {
+            await _hubConnection.DisposeAsync();
+        }
+    }
+
+    private class AlertItem
+    {
+        public AlertSeverity Severity { get; set; }
+        public string Message { get; set; } = "";
+        public string Source { get; set; } = "";
+        public int? AgentId { get; set; }
+    }
+
+    private enum AlertSeverity
+    {
+        Error,
+        Warning,
+        Info
+    }
+}

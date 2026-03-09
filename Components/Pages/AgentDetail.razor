@@ -1,0 +1,1546 @@
+@page "/agent/{AgentId:int}"
+@using AgentCompanyWeb.Data
+@using AgentCompanyWeb.Data.Models
+@using AgentCompanyWeb.Services
+@using AgentCompanyEngineer.Services
+@using Microsoft.EntityFrameworkCore
+@using Microsoft.AspNetCore.SignalR.Client
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+@inject AgentService DockerAgentService
+@inject RedisService Redis
+@inject GroupService GroupService
+@inject IServiceScopeFactory ScopeFactory
+@implements IAsyncDisposable
+@rendermode InteractiveServer
+
+<PageTitle>@(_agent?.Name ?? "Agent") - Agent Company</PageTitle>
+
+<div class="agent-detail-layout @(_viewMode)">
+    <!-- Status Bar (visible in split/fullscreen modes) -->
+    @if (_viewMode != "chat")
+    {
+        <div class="status-bar">
+            <button class="btn btn-ghost btn-icon" @onclick="GoBack" title="Back to Agents">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M19 12H5M12 19l-7-7 7-7"/>
+                </svg>
+            </button>
+            <div class="status-bar-info">
+                <span class="status-dot @GetStatusClass(_agent?.Status ?? AgentStatus.Offline)"></span>
+                <span class="status-bar-name">@(_agent?.Name ?? "Agent")</span>
+                @if (_agent?.Status == AgentStatus.Working)
+                {
+                    <span class="status-bar-status working">Working</span>
+                }
+                else if (_agent?.Status == AgentStatus.Starting)
+                {
+                    <span class="status-bar-status starting">Starting...</span>
+                }
+                else if (_agent?.Status == AgentStatus.Online)
+                {
+                    <span class="status-bar-status online">Online</span>
+                }
+                else if (_agent?.Status == AgentStatus.Error)
+                {
+                    <span class="status-bar-status error">Error</span>
+                }
+                else
+                {
+                    <span class="status-bar-status offline">Offline</span>
+                }
+            </div>
+            @if (_redisConnected || _signalRConnected)
+            {
+                <span class="connection-badge connected" title="@(_redisConnected ? "Redis" : "") @(_signalRConnected ? "SignalR" : "") connected">
+                    @if (_redisConnected && _signalRConnected)
+                    {
+                        <text>Live</text>
+                    }
+                    else if (_signalRConnected)
+                    {
+                        <text>Network</text>
+                    }
+                    else
+                    {
+                        <text>Redis</text>
+                    }
+                </span>
+            }
+            else
+            {
+                <span class="connection-badge disconnected" title="Reconnecting...">Offline</span>
+            }
+            @if (_agent?.Status == AgentStatus.Working)
+            {
+                <button class="btn btn-ghost btn-sm danger" @onclick="StopTask" title="Stop Task">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="6" y="6" width="12" height="12" rx="2"/>
+                    </svg>
+                    Stop
+                </button>
+            }
+        </div>
+    }
+
+    <!-- Sidebar (hidden in split and fullscreen modes) -->
+    <div class="agent-sidebar @(_viewMode != "chat" ? "hidden" : "")">
+        <div class="sidebar-header">
+            <button class="btn btn-ghost btn-icon" @onclick="GoBack" title="Back to Agents">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M19 12H5M12 19l-7-7 7-7"/>
+                </svg>
+            </button>
+            <div class="agent-info">
+                <span class="status-dot @GetStatusClass(_agent?.Status ?? AgentStatus.Offline)"></span>
+                <span class="agent-name">@(_agent?.Name ?? "Loading...")</span>
+            </div>
+            <div class="header-actions">
+                @if (_redisConnected)
+                {
+                    <span class="connection-indicator connected" title="Connected to Redis"></span>
+                }
+                @if (_agent?.Status == AgentStatus.Working)
+                {
+                    <button class="btn btn-ghost btn-icon danger" @onclick="StopTask" title="Stop Task">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="6" y="6" width="12" height="12" rx="2"/>
+                        </svg>
+                    </button>
+                }
+            </div>
+        </div>
+
+        <div class="agent-meta">
+            @if (!string.IsNullOrEmpty(_agent?.Role))
+            {
+                <span class="role-tag">@_agent.Role</span>
+            }
+            <span class="model-tag">@(_agent?.Model?.ToUpper() ?? "SONNET")</span>
+            <span class="group-tag">@(_agent?.Group?.Name ?? "Default")</span>
+        </div>
+
+        <!-- Workspaces Section -->
+        <div class="sidebar-section">
+            <div class="section-header">
+                <span class="section-title">Workspaces</span>
+                <button class="btn btn-ghost btn-icon small" @onclick="() => _showAddWorkspace = true" title="Add Workspace">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                </button>
+            </div>
+            <div class="workspace-list">
+                @foreach (var ws in _workspaces)
+                {
+                    <button class="workspace-item @(ws.IsActive ? "active" : "")" @onclick="async () => await SwitchWorkspace(ws)">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                        </svg>
+                        <span>@ws.Name</span>
+                    </button>
+                }
+                @if (_workspaces.Count == 0)
+                {
+                    <p class="empty-hint">No workspaces yet</p>
+                }
+            </div>
+        </div>
+
+        <!-- Current Task Section -->
+        @if (!string.IsNullOrEmpty(_agent?.CurrentTask))
+        {
+            <div class="sidebar-section">
+                <div class="section-header">
+                    <span class="section-title">Current Task</span>
+                </div>
+                <div class="current-task-display">
+                    @_agent.CurrentTask
+                </div>
+            </div>
+        }
+    </div>
+
+    <!-- Main Content Area -->
+    <div class="agent-main">
+        <!-- View Mode Toggle -->
+        <div class="view-toggle">
+            <button class="toggle-btn @(_viewMode == "chat" ? "active" : "")" @onclick='() => _viewMode = "chat"' title="Chat Only">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                </svg>
+            </button>
+            <button class="toggle-btn @(_viewMode == "split" ? "active" : "")" @onclick='() => _viewMode = "split"' title="Split View">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="18" height="18" rx="2"/>
+                    <line x1="12" y1="3" x2="12" y2="21"/>
+                </svg>
+            </button>
+            <button class="toggle-btn @(_viewMode == "fullscreen" ? "active" : "")" @onclick='() => _viewMode = "fullscreen"' title="Fullscreen Desktop">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="2" y="3" width="20" height="14" rx="2"/>
+                    <line x1="8" y1="21" x2="16" y2="21"/>
+                    <line x1="12" y1="17" x2="12" y2="21"/>
+                </svg>
+            </button>
+        </div>
+
+        <!-- Chat Panel -->
+        @if (_viewMode != "fullscreen")
+        {
+            <div class="chat-panel @(_viewMode == "split" ? "split" : "")">
+                <div class="messages-container" @ref="_messagesRef">
+                    @foreach (var msg in _messages)
+                    {
+                        <div class="chat-message @msg.Type.ToString().ToLower()">
+                            @if (msg.Type == ChatMessageType.User)
+                            {
+                                <div class="message-header">
+                                    <span class="sender">You</span>
+                                    <span class="time">@msg.Timestamp.ToString("HH:mm")</span>
+                                </div>
+                            }
+                            else if (msg.Type == ChatMessageType.Agent)
+                            {
+                                <div class="message-header">
+                                    <span class="sender">@_agent?.Name</span>
+                                    <span class="time">@msg.Timestamp.ToString("HH:mm")</span>
+                                </div>
+                            }
+                            <div class="message-body">@msg.Content</div>
+                        </div>
+                    }
+                    @if (_messages.Count == 0)
+                    {
+                        <div class="empty-chat">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                            </svg>
+                            <p>Send a task to start working with the agent</p>
+                        </div>
+                    }
+                    @if (_isAgentThinking)
+                    {
+                        <div class="thinking-indicator">
+                            <div class="typing-dots">
+                                <span></span><span></span><span></span>
+                            </div>
+                            <span>Agent is thinking...</span>
+                        </div>
+                    }
+                </div>
+
+                <div class="input-area">
+                    <textarea class="task-input" placeholder="Describe a task for the agent..."
+                              @bind="_taskInput" @bind:event="oninput"
+                              @onkeydown="HandleKeyDown" rows="3"></textarea>
+                    <button class="btn btn-primary send-btn" @onclick="SendTask"
+                            disabled="@(string.IsNullOrWhiteSpace(_taskInput) || _isAgentThinking)">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="22" y1="2" x2="11" y2="13"></line>
+                            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        }
+
+        <!-- VNC Desktop Panel -->
+        @if (_viewMode == "split" || _viewMode == "fullscreen")
+        {
+            <div class="vnc-panel @(_viewMode == "fullscreen" ? "fullscreen" : "")">
+                @if (!string.IsNullOrEmpty(_agent?.VncUrl))
+                {
+                    <iframe src="@_agent.VncUrl" class="vnc-frame" title="Agent Desktop"></iframe>
+                }
+                else
+                {
+                    <div class="vnc-placeholder">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <rect x="2" y="3" width="20" height="14" rx="2"/>
+                            <line x1="8" y1="21" x2="16" y2="21"/>
+                            <line x1="12" y1="17" x2="12" y2="21"/>
+                        </svg>
+                        <h3>Desktop Not Available</h3>
+                        <p>Start the agent to access its desktop</p>
+                        <button class="btn btn-primary" @onclick="StartAgent">Start Agent</button>
+                    </div>
+                }
+                @if (_viewMode == "fullscreen")
+                {
+                    <button class="exit-fullscreen-btn" @onclick='() => _viewMode = "split"'>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18"></line>
+                            <line x1="6" y1="6" x2="18" y2="18"></line>
+                        </svg>
+                        Exit Fullscreen
+                    </button>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+<!-- Add Workspace Modal -->
+@if (_showAddWorkspace)
+{
+    <div class="modal-overlay active" @onclick="() => _showAddWorkspace = false"></div>
+    <div class="modal active">
+        <div class="modal-header">
+            <h3>Add Workspace</h3>
+            <button class="btn btn-ghost btn-icon" @onclick="() => _showAddWorkspace = false">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label class="form-label">Folder Name</label>
+                <input type="text" class="form-input" placeholder="my-project" @bind="_newWorkspaceName" />
+            </div>
+            <div class="form-group">
+                <label class="form-label">Git Repository URL</label>
+                <input type="text" class="form-input" placeholder="https://github.com/user/repo.git" @bind="_newWorkspaceUrl" />
+            </div>
+            <div class="form-group">
+                <label class="form-label">Branch</label>
+                <input type="text" class="form-input" placeholder="main" @bind="_newWorkspaceBranch" />
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" @onclick="() => _showAddWorkspace = false">Cancel</button>
+            <button class="btn btn-primary" @onclick="async () => await AddWorkspace()">Add Workspace</button>
+        </div>
+    </div>
+}
+
+<style>
+    .agent-detail-layout {
+        display: flex;
+        flex-direction: row;
+        height: 100%;
+        min-height: 100%;
+        background: var(--bg-app, #F5F5F7);
+    }
+
+    /* Chat mode: sidebar visible, full chat */
+    .agent-detail-layout.chat {
+        flex-direction: row;
+    }
+
+    .agent-detail-layout.chat .agent-main {
+        flex-direction: column;
+    }
+
+    /* Split mode: cover ENTIRE screen including main sidebar */
+    .agent-detail-layout.split {
+        position: fixed !important;
+        inset: 0 !important;
+        z-index: 9999 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        width: 100vw !important;
+        height: 100vh !important;
+        max-width: 100vw !important;
+        max-height: 100vh !important;
+        flex-direction: column;
+        background: var(--bg-app, #F5F5F7);
+        overflow: hidden;
+    }
+
+    .agent-detail-layout.split .agent-main {
+        flex-direction: row;
+        flex: 1;
+        min-height: 0;
+    }
+
+    /* Fullscreen mode: only VNC, cover ENTIRE screen */
+    .agent-detail-layout.fullscreen {
+        position: fixed !important;
+        inset: 0 !important;
+        z-index: 9999 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        width: 100vw !important;
+        height: 100vh !important;
+        max-width: 100vw !important;
+        max-height: 100vh !important;
+        flex-direction: column;
+        background: #1a1a1a;
+        overflow: hidden;
+    }
+
+    /* Status bar for split/fullscreen modes */
+    .status-bar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 8px 16px;
+        background: var(--bg-card);
+        border-bottom: 1px solid var(--border);
+        height: 48px;
+        flex-shrink: 0;
+    }
+
+    .status-bar-info {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: 1;
+    }
+
+    .status-bar-name {
+        font-weight: 600;
+        font-size: 14px;
+    }
+
+    .status-bar-status {
+        font-size: 12px;
+        padding: 2px 8px;
+        border-radius: var(--radius-full);
+    }
+
+    .status-bar-status.online {
+        background: rgba(52, 199, 89, 0.15);
+        color: var(--success);
+    }
+
+    .status-bar-status.working {
+        background: rgba(255, 159, 10, 0.15);
+        color: var(--warning);
+    }
+
+    .status-bar-status.starting {
+        background: rgba(90, 200, 250, 0.15);
+        color: #5AC8FA;
+        animation: pulse 1s infinite;
+    }
+
+    .status-bar-status.error {
+        background: rgba(255, 59, 48, 0.15);
+        color: var(--danger);
+    }
+
+    .status-bar-status.offline {
+        background: var(--bg-secondary);
+        color: var(--text-tertiary);
+    }
+
+    .connection-badge {
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: var(--radius-full);
+        background: rgba(52, 199, 89, 0.15);
+        color: var(--success);
+    }
+
+    .connection-badge.connected::before {
+        content: "";
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        background: var(--success);
+        border-radius: 50%;
+        margin-right: 6px;
+    }
+
+    .connection-badge.disconnected {
+        background: rgba(255, 159, 10, 0.15);
+        color: var(--warning);
+    }
+
+    .connection-badge.disconnected::before {
+        content: "";
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        background: var(--warning);
+        border-radius: 50%;
+        margin-right: 6px;
+        animation: pulse 1s infinite;
+    }
+
+    .btn-sm {
+        padding: 4px 10px;
+        font-size: 12px;
+    }
+
+    .btn-sm svg {
+        margin-right: 4px;
+    }
+
+    .agent-sidebar {
+        width: 280px;
+        background: var(--bg-card);
+        border-right: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        overflow-y: auto;
+        transition: width 0.2s ease, opacity 0.2s ease;
+    }
+
+    .agent-sidebar.hidden {
+        display: none !important;
+    }
+
+    .sidebar-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 16px;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .agent-info {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: 1;
+    }
+
+    .agent-name {
+        font-weight: 600;
+        font-size: 15px;
+    }
+
+    .agent-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .role-tag, .model-tag, .group-tag {
+        padding: 2px 8px;
+        border-radius: var(--radius-full);
+        font-size: 11px;
+        font-weight: 500;
+    }
+
+    .role-tag {
+        background: var(--bg-active);
+        color: var(--accent);
+    }
+
+    .model-tag {
+        background: var(--bg-secondary);
+        color: var(--text-secondary);
+    }
+
+    .group-tag {
+        background: rgba(52, 199, 89, 0.1);
+        color: var(--success);
+    }
+
+    .sidebar-section {
+        padding: 16px;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 12px;
+    }
+
+    .section-title {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text-tertiary);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .workspace-list {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .workspace-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        background: none;
+        border: none;
+        border-radius: var(--radius-md);
+        cursor: pointer;
+        font-size: 13px;
+        color: var(--text-secondary);
+        transition: all 0.15s ease;
+        text-align: left;
+        width: 100%;
+    }
+
+    .workspace-item:hover {
+        background: var(--bg-hover);
+    }
+
+    .workspace-item.active {
+        background: var(--bg-active);
+        color: var(--accent);
+    }
+
+    .empty-hint {
+        font-size: 12px;
+        color: var(--text-tertiary);
+        text-align: center;
+        padding: 12px;
+    }
+
+    .current-task-display {
+        font-size: 13px;
+        color: var(--text-secondary);
+        background: var(--bg-secondary);
+        padding: 12px;
+        border-radius: var(--radius-md);
+        line-height: 1.5;
+    }
+
+    .agent-main {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        position: relative;
+        overflow: hidden;
+        min-height: 0; /* Important for flex children to shrink */
+    }
+
+    .agent-detail-layout.split .agent-main {
+        flex-direction: row;
+        flex: 1;
+        min-height: 0;
+    }
+
+    .agent-detail-layout.fullscreen .agent-main {
+        flex: 1;
+        min-height: 0;
+    }
+
+    .view-toggle {
+        position: absolute;
+        top: 16px;
+        right: 16px;
+        display: flex;
+        background: var(--bg-card);
+        border-radius: var(--radius-md);
+        box-shadow: var(--shadow-sm);
+        z-index: 10;
+    }
+
+    .toggle-btn {
+        padding: 8px 12px;
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: var(--text-tertiary);
+        transition: all 0.15s ease;
+    }
+
+    .toggle-btn:hover {
+        color: var(--text-primary);
+    }
+
+    .toggle-btn.active {
+        color: var(--accent);
+        background: var(--bg-active);
+    }
+
+    .toggle-btn:first-child {
+        border-radius: var(--radius-md) 0 0 var(--radius-md);
+    }
+
+    .toggle-btn:last-child {
+        border-radius: 0 var(--radius-md) var(--radius-md) 0;
+    }
+
+    .chat-panel {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        padding: 16px;
+        min-height: 0;
+        background: var(--bg-secondary, #F5F5F7);
+    }
+
+    .agent-detail-layout.split .chat-panel {
+        width: 380px;
+        min-width: 320px;
+        max-width: 450px;
+        flex: none;
+        border-right: 1px solid var(--border);
+        background: var(--bg-card, white);
+        border-radius: 0;
+    }
+
+    .messages-container {
+        flex: 1;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        margin-bottom: 16px;
+    }
+
+    .chat-message {
+        max-width: 80%;
+        padding: 12px 16px;
+        border-radius: var(--radius-lg);
+        background: var(--bg-card);
+        box-shadow: var(--shadow-xs);
+    }
+
+    .chat-message.user {
+        margin-left: auto;
+        background: var(--accent);
+        color: white;
+    }
+
+    .chat-message.agent {
+        margin-right: auto;
+    }
+
+    .chat-message.system {
+        margin: 0 auto;
+        background: var(--bg-secondary);
+        font-size: 12px;
+        color: var(--text-tertiary);
+    }
+
+    .message-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 4px;
+        font-size: 12px;
+    }
+
+    .sender {
+        font-weight: 600;
+    }
+
+    .time {
+        color: var(--text-tertiary);
+    }
+
+    .chat-message.user .time {
+        color: rgba(255, 255, 255, 0.7);
+    }
+
+    .message-body {
+        font-size: 14px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+    }
+
+    .empty-chat {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        color: var(--text-tertiary);
+        text-align: center;
+        gap: 12px;
+    }
+
+    .empty-chat svg {
+        opacity: 0.4;
+    }
+
+    .thinking-indicator {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 16px;
+        background: var(--bg-card);
+        border-radius: var(--radius-lg);
+        font-size: 13px;
+        color: var(--text-secondary);
+    }
+
+    .typing-dots {
+        display: flex;
+        gap: 4px;
+    }
+
+    .typing-dots span {
+        width: 8px;
+        height: 8px;
+        background: var(--accent);
+        border-radius: 50%;
+        animation: bounce 1.4s infinite ease-in-out both;
+    }
+
+    .typing-dots span:nth-child(1) { animation-delay: -0.32s; }
+    .typing-dots span:nth-child(2) { animation-delay: -0.16s; }
+
+    @@keyframes bounce {
+        0%, 80%, 100% { transform: scale(0); }
+        40% { transform: scale(1); }
+    }
+
+    .input-area {
+        display: flex;
+        gap: 12px;
+        align-items: flex-end;
+    }
+
+    .task-input {
+        flex: 1;
+        padding: 12px 16px;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        font-size: 14px;
+        color: var(--text-primary);
+        resize: none;
+        font-family: inherit;
+    }
+
+    .task-input:focus {
+        outline: none;
+        border-color: var(--accent);
+    }
+
+    .send-btn {
+        height: fit-content;
+        padding: 12px 16px;
+    }
+
+    .vnc-panel {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #1a1a1a;
+        position: relative;
+        min-height: 0;
+    }
+
+    .agent-detail-layout.split .vnc-panel {
+        flex: 1;
+        min-height: 0;
+        border-radius: 0;
+    }
+
+    .agent-detail-layout.fullscreen .vnc-panel {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 100;
+    }
+
+    .agent-detail-layout.fullscreen .view-toggle {
+        position: fixed;
+        top: 16px;
+        right: 16px;
+        z-index: 101;
+    }
+
+    .vnc-frame {
+        width: 100%;
+        height: 100%;
+        border: none;
+    }
+
+    .vnc-placeholder {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        color: #666;
+        text-align: center;
+        gap: 16px;
+    }
+
+    .vnc-placeholder h3 {
+        color: #999;
+        margin: 0;
+    }
+
+    .vnc-placeholder p {
+        margin: 0;
+    }
+
+    .exit-fullscreen-btn {
+        position: absolute;
+        top: 16px;
+        right: 16px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 16px;
+        background: rgba(255, 255, 255, 0.1);
+        border: none;
+        border-radius: var(--radius-md);
+        color: white;
+        cursor: pointer;
+        font-size: 13px;
+        transition: background 0.15s ease;
+    }
+
+    .exit-fullscreen-btn:hover {
+        background: rgba(255, 255, 255, 0.2);
+    }
+
+    .connection-indicator {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-right: 8px;
+    }
+
+    .connection-indicator.connected {
+        background: var(--success);
+        box-shadow: 0 0 6px var(--success);
+    }
+
+    .status-starting {
+        background: var(--warning);
+        animation: pulse 1s infinite;
+    }
+
+    @@keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+    }
+
+    .header-actions .danger {
+        color: var(--danger);
+    }
+
+    .modal {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: var(--bg-card);
+        border-radius: var(--radius-xl);
+        box-shadow: var(--shadow-lg);
+        width: 90%;
+        max-width: 480px;
+        z-index: 1001;
+    }
+
+    .modal-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 20px 24px;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .modal-header h3 {
+        margin: 0;
+        font-size: 18px;
+    }
+
+    .modal-body {
+        padding: 24px;
+    }
+
+    .modal-footer {
+        display: flex;
+        justify-content: flex-end;
+        gap: 12px;
+        padding: 16px 24px;
+        border-top: 1px solid var(--border);
+    }
+
+    .btn-icon.small {
+        padding: 4px;
+    }
+
+    .fullscreen .chat-panel {
+        display: none;
+    }
+</style>
+
+@code {
+    [Parameter]
+    public int AgentId { get; set; }
+
+    private AgentCompanyWeb.Data.Models.Agent? _agent;
+    private AgentCompanyEngineer.Models.Agent? _dockerAgent;
+    private List<WorkspaceItem> _workspaces = new();
+    private List<ChatMessage> _messages = new();
+    private string _viewMode = "chat";
+    private string _taskInput = "";
+    private bool _isAgentThinking = false;
+    private bool _showAddWorkspace = false;
+    private string _newWorkspaceName = "";
+    private string _newWorkspaceUrl = "";
+    private string _newWorkspaceBranch = "main";
+    private ElementReference _messagesRef;
+    private bool _redisConnected = false;
+    private bool _signalRConnected = false;
+    private bool _isStarting = false;
+    private Action<AgentCompanyEngineer.Models.AgentEvent>? _eventHandler;
+    private HubConnection? _hubConnection;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _agent = await db.Agents.Include(a => a.Group).FirstOrDefaultAsync(a => a.Id == AgentId);
+
+        if (_agent != null)
+        {
+            // Check if this agent already has a Docker container running
+            if (!string.IsNullOrEmpty(_agent.ContainerId))
+            {
+                // Check if Docker container is actually running via Docker API
+                try
+                {
+                    _dockerAgent = await DockerAgentService.GetAgentByContainerIdAsync(_agent.ContainerId);
+                }
+                catch
+                {
+                    _dockerAgent = null;
+                }
+
+                if (_dockerAgent != null)
+                {
+                    // Container is running - update VNC URL from actual container port mappings
+                    if (!string.IsNullOrEmpty(_dockerAgent.VncUrl) && _agent.VncUrl != _dockerAgent.VncUrl)
+                    {
+                        _agent.VncUrl = _dockerAgent.VncUrl;
+                        _agent.Status = AgentStatus.Online;
+                        db.Agents.Update(_agent);
+                        await db.SaveChangesAsync();
+                    }
+                }
+                else
+                {
+                    // Container is not running - clear stale data
+                    _agent.VncUrl = null;
+                    _agent.ContainerId = null;
+                    _agent.Status = AgentStatus.Offline;
+                    db.Agents.Update(_agent);
+                    await db.SaveChangesAsync();
+                }
+            }
+
+            // Connect to SignalR for real-time agent status updates
+            await ConnectToSignalR();
+
+            // Connect to Redis (non-blocking)
+            try
+            {
+                _redisConnected = await Redis.ConnectAsync();
+            }
+            catch
+            {
+                _redisConnected = false;
+            }
+
+            if (_dockerAgent != null && _redisConnected)
+            {
+                await SubscribeToAgentEvents();
+                try
+                {
+                    await Redis.RequestStatusAsync(_dockerAgent.Id);
+                }
+                catch { }
+            }
+        }
+    }
+
+    private async Task ConnectToSignalR()
+    {
+        try
+        {
+            _hubConnection = new HubConnectionBuilder()
+                .WithUrl(Nav.ToAbsoluteUri("/hubs/agentnetwork"))
+                .WithAutomaticReconnect()
+                .Build();
+
+            // Handle agent status changes from the network
+            _hubConnection.On<dynamic>("AgentStatusChanged", async (status) =>
+            {
+                await InvokeAsync(() =>
+                {
+                    try
+                    {
+                        string agentName = status.agentName?.ToString() ?? "";
+                        string newStatus = status.status?.ToString() ?? "offline";
+
+                        // Only update if it's this agent
+                        if (_agent != null && _agent.Name == agentName)
+                        {
+                            _agent.Status = newStatus switch
+                            {
+                                "online" => AgentStatus.Online,
+                                "working" => AgentStatus.Working,
+                                "error" => AgentStatus.Error,
+                                "starting" => AgentStatus.Starting,
+                                _ => AgentStatus.Offline
+                            };
+                            StateHasChanged();
+                        }
+                    }
+                    catch { }
+                });
+            });
+
+            _hubConnection.Reconnecting += (ex) =>
+            {
+                _signalRConnected = false;
+                InvokeAsync(StateHasChanged);
+                return Task.CompletedTask;
+            };
+
+            _hubConnection.Reconnected += async (connectionId) =>
+            {
+                _signalRConnected = true;
+                if (_agent != null)
+                {
+                    await _hubConnection.InvokeAsync("Connect", _agent.Name);
+                }
+                await InvokeAsync(StateHasChanged);
+            };
+
+            await _hubConnection.StartAsync();
+            _signalRConnected = true;
+
+            // Register this agent
+            if (_agent != null)
+            {
+                await _hubConnection.InvokeAsync("Connect", _agent.Name);
+            }
+        }
+        catch
+        {
+            _signalRConnected = false;
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_dockerAgent != null && _eventHandler != null)
+        {
+            await Redis.UnsubscribeFromEventsAsync(_dockerAgent.Id, _eventHandler);
+        }
+        if (_hubConnection != null)
+        {
+            await _hubConnection.DisposeAsync();
+        }
+    }
+
+    private async Task SubscribeToAgentEvents()
+    {
+        if (_dockerAgent == null || !_redisConnected) return;
+
+        _eventHandler = HandleAgentEvent;
+        await Redis.SubscribeToEventsAsync(_dockerAgent.Id, _eventHandler);
+    }
+
+    private void HandleAgentEvent(AgentCompanyEngineer.Models.AgentEvent agentEvent)
+    {
+        InvokeAsync(async () =>
+        {
+            switch (agentEvent.Type)
+            {
+                case "claude_output":
+                    var outputText = ParseClaudeOutput(agentEvent.Data);
+                    if (!string.IsNullOrWhiteSpace(outputText))
+                    {
+                        AddMessage(ChatMessageType.Agent, outputText);
+                    }
+                    break;
+
+                case "task_started":
+                    if (_agent != null)
+                    {
+                        _agent.Status = AgentStatus.Working;
+                        await UpdateAgentStatusInDb(AgentStatus.Working);
+                        await BroadcastStatusChange("working");
+                    }
+                    _isAgentThinking = true;
+                    break;
+
+                case "task_completed":
+                    if (_agent != null)
+                    {
+                        _agent.Status = AgentStatus.Online;
+                        await UpdateAgentStatusInDb(AgentStatus.Online);
+                        await BroadcastStatusChange("online");
+                    }
+                    _isAgentThinking = false;
+                    break;
+
+                case "task_stopped":
+                    AddMessage(ChatMessageType.System, "Task stopped");
+                    if (_agent != null)
+                    {
+                        _agent.Status = AgentStatus.Online;
+                        await UpdateAgentStatusInDb(AgentStatus.Online);
+                        await BroadcastStatusChange("online");
+                    }
+                    _isAgentThinking = false;
+                    break;
+
+                case "status":
+                    if (agentEvent.Data.TryGetValue("workspaces", out var wsData) && wsData is System.Text.Json.JsonElement wsArray)
+                    {
+                        _workspaces = wsArray.EnumerateArray()
+                            .Select(ws => new WorkspaceItem
+                            {
+                                Name = ws.GetProperty("name").GetString() ?? "",
+                                RepoUrl = ws.TryGetProperty("repo_url", out var url) ? url.GetString() : null,
+                                Branch = ws.TryGetProperty("branch", out var branch) ? branch.GetString() : null,
+                                IsActive = ws.TryGetProperty("active", out var active) && active.GetBoolean()
+                            })
+                            .ToList();
+                    }
+                    break;
+
+                case "error":
+                    AddMessage(ChatMessageType.Error, agentEvent.Data.GetValueOrDefault("message")?.ToString() ?? "Unknown error");
+                    if (_agent != null)
+                    {
+                        _agent.Status = AgentStatus.Error;
+                        await UpdateAgentStatusInDb(AgentStatus.Error);
+                        await BroadcastStatusChange("error");
+                    }
+                    break;
+
+                case "daemon_started":
+                    if (_agent != null)
+                    {
+                        _agent.Status = AgentStatus.Online;
+                        await UpdateAgentStatusInDb(AgentStatus.Online);
+                        await BroadcastStatusChange("online");
+                    }
+                    AddMessage(ChatMessageType.System, "Agent is ready!");
+                    break;
+
+                case "workspace_created":
+                case "workspace_switched":
+                    if (agentEvent.Type == "workspace_switched" && _dockerAgent != null)
+                    {
+                        _dockerAgent.CurrentWorkspace = agentEvent.Data.GetValueOrDefault("name")?.ToString();
+                    }
+                    break;
+            }
+
+            StateHasChanged();
+        });
+    }
+
+    private async Task UpdateAgentStatusInDb(AgentStatus status)
+    {
+        if (_agent == null) return;
+
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var agent = await db.Agents.FindAsync(_agent.Id);
+            if (agent != null)
+            {
+                agent.Status = status;
+                agent.LastActivityAt = DateTime.UtcNow;
+                await db.SaveChangesAsync();
+            }
+        }
+        catch { }
+    }
+
+    private async Task BroadcastStatusChange(string status)
+    {
+        if (_agent == null || _hubConnection == null || !_signalRConnected) return;
+
+        try
+        {
+            await _hubConnection.InvokeAsync("UpdateStatus", _agent.Name, status, _agent.CurrentTask);
+        }
+        catch { }
+    }
+
+    private void AddMessage(ChatMessageType type, string content)
+    {
+        _messages.Add(new ChatMessage
+        {
+            Type = type,
+            Content = content,
+            Timestamp = DateTime.Now
+        });
+    }
+
+    private string ParseClaudeOutput(Dictionary<string, object> data)
+    {
+        try
+        {
+            if (data.TryGetValue("type", out var typeObj))
+            {
+                var type = typeObj?.ToString();
+                if (type == "system" || type == "result" || type == "user") return "";
+
+                if (type == "assistant" && data.TryGetValue("message", out var msgObj))
+                {
+                    if (msgObj is System.Text.Json.JsonElement msgElement)
+                    {
+                        return ExtractAssistantText(msgElement);
+                    }
+                }
+            }
+            if (data.TryGetValue("text", out var textObj))
+                return textObj?.ToString() ?? "";
+
+            return "";
+        }
+        catch { return ""; }
+    }
+
+    private string ExtractAssistantText(System.Text.Json.JsonElement message)
+    {
+        try
+        {
+            if (message.TryGetProperty("content", out var content) && content.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                var texts = new List<string>();
+                foreach (var item in content.EnumerateArray())
+                {
+                    if (item.TryGetProperty("type", out var itemType) && itemType.GetString() == "text")
+                    {
+                        if (item.TryGetProperty("text", out var textProp))
+                            texts.Add(textProp.GetString() ?? "");
+                    }
+                }
+                return string.Join("\n", texts);
+            }
+            return "";
+        }
+        catch { return ""; }
+    }
+
+    private void GoBack()
+    {
+        Nav.NavigateTo("/agents");
+    }
+
+    private async Task SendTask()
+    {
+        if (string.IsNullOrWhiteSpace(_taskInput) || _dockerAgent == null) return;
+
+        _messages.Add(new ChatMessage
+        {
+            Type = ChatMessageType.User,
+            Content = _taskInput,
+            Timestamp = DateTime.Now
+        });
+
+        var task = _taskInput;
+        _taskInput = "";
+        _isAgentThinking = true;
+        if (_agent != null) _agent.Status = AgentStatus.Working;
+        StateHasChanged();
+
+        try
+        {
+            await Redis.SendTaskAsync(_dockerAgent.Id, task);
+        }
+        catch (Exception ex)
+        {
+            AddMessage(ChatMessageType.Error, $"Failed to send: {ex.Message}");
+            _isAgentThinking = false;
+        }
+
+        StateHasChanged();
+    }
+
+    private async Task HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !e.ShiftKey)
+        {
+            await SendTask();
+        }
+    }
+
+    private async Task StopTask()
+    {
+        if (_dockerAgent == null) return;
+
+        try
+        {
+            await Redis.StopTaskAsync(_dockerAgent.Id);
+            _isAgentThinking = false;
+            if (_agent != null) _agent.Status = AgentStatus.Online;
+        }
+        catch (Exception ex)
+        {
+            AddMessage(ChatMessageType.Error, $"Failed to stop: {ex.Message}");
+        }
+    }
+
+    private async Task StartAgent()
+    {
+        if (_agent == null || _isStarting) return;
+
+        _isStarting = true;
+        StateHasChanged();
+
+        try
+        {
+            AddMessage(ChatMessageType.System, "Starting agent container...");
+
+            // Get all credentials from the agent's group
+            var credentials = new Dictionary<string, string>();
+            if (_agent.Group != null)
+            {
+                credentials = await GroupService.GetAllCredentialsAsync(_agent.Group.Id);
+            }
+
+            // Create the Docker container
+            _dockerAgent = await DockerAgentService.CreateAgentAsync(_agent.Name, credentials);
+
+            // Update our database agent with the container info
+            _agent.ContainerId = _dockerAgent.ContainerId;
+            _agent.VncUrl = _dockerAgent.VncUrl;
+            _agent.Status = AgentStatus.Starting;
+            await using (var db = await DbFactory.CreateDbContextAsync())
+            {
+                db.Agents.Update(_agent);
+                await db.SaveChangesAsync();
+            }
+
+            // Connect to Redis and subscribe
+            if (!_redisConnected)
+            {
+                try
+                {
+                    _redisConnected = await Redis.ConnectAsync();
+                }
+                catch
+                {
+                    _redisConnected = false;
+                }
+            }
+
+            if (_redisConnected)
+            {
+                await SubscribeToAgentEvents();
+            }
+            else
+            {
+                // Redis not available - set status to Online after container starts
+                // since we won't receive the daemon_started event
+                _agent.Status = AgentStatus.Online;
+                await UpdateAgentStatusInDb(AgentStatus.Online);
+                await BroadcastStatusChange("online");
+                AddMessage(ChatMessageType.System, "Note: Redis not connected - real-time events disabled");
+            }
+
+            AddMessage(ChatMessageType.System, $"Container started. VNC: {_dockerAgent.VncUrl}");
+        }
+        catch (Exception ex)
+        {
+            AddMessage(ChatMessageType.Error, $"Failed to start: {ex.Message}");
+            if (_agent != null) _agent.Status = AgentStatus.Error;
+        }
+        finally
+        {
+            _isStarting = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task SwitchWorkspace(WorkspaceItem ws)
+    {
+        if (_dockerAgent == null) return;
+
+        foreach (var w in _workspaces) w.IsActive = false;
+        ws.IsActive = true;
+
+        try
+        {
+            await Redis.SwitchWorkspaceAsync(_dockerAgent.Id, ws.Name);
+        }
+        catch (Exception ex)
+        {
+            AddMessage(ChatMessageType.Error, $"Failed to switch workspace: {ex.Message}");
+        }
+    }
+
+    private async Task AddWorkspace()
+    {
+        if (string.IsNullOrWhiteSpace(_newWorkspaceName) || _dockerAgent == null) return;
+
+        _workspaces.Add(new WorkspaceItem
+        {
+            Name = _newWorkspaceName,
+            RepoUrl = _newWorkspaceUrl,
+            Branch = _newWorkspaceBranch
+        });
+
+        try
+        {
+            // Get GitHub token for private repos
+            string? githubToken = null;
+            if (_agent?.Group != null)
+            {
+                githubToken = await GroupService.GetGitHubTokenAsync(_agent.Group.Id);
+            }
+
+            await Redis.CreateWorkspaceAsync(
+                _dockerAgent.Id,
+                _newWorkspaceName,
+                _newWorkspaceUrl,
+                string.IsNullOrWhiteSpace(_newWorkspaceBranch) ? "main" : _newWorkspaceBranch,
+                githubToken);
+
+            AddMessage(ChatMessageType.System, $"Cloning {_newWorkspaceUrl} to {_newWorkspaceName}...");
+        }
+        catch (Exception ex)
+        {
+            AddMessage(ChatMessageType.Error, $"Failed to create workspace: {ex.Message}");
+        }
+
+        _showAddWorkspace = false;
+        _newWorkspaceName = "";
+        _newWorkspaceUrl = "";
+        _newWorkspaceBranch = "main";
+    }
+
+    private string GetStatusClass(AgentStatus status) => status switch
+    {
+        AgentStatus.Online => "status-online",
+        AgentStatus.Working => "status-working",
+        AgentStatus.Error => "status-error",
+        AgentStatus.Starting => "status-starting",
+        _ => "status-offline"
+    };
+
+    private class WorkspaceItem
+    {
+        public string Name { get; set; } = "";
+        public string? RepoUrl { get; set; }
+        public string? Branch { get; set; }
+        public bool IsActive { get; set; }
+    }
+
+    private class ChatMessage
+    {
+        public ChatMessageType Type { get; set; }
+        public string Content { get; set; } = "";
+        public DateTime Timestamp { get; set; }
+    }
+
+    private enum ChatMessageType
+    {
+        User,
+        Agent,
+        System,
+        Error
+    }
+}

@@ -1,0 +1,552 @@
+@using AgentCompanyWeb.Data
+@using AgentCompanyWeb.Data.Models
+@using AgentCompanyWeb.Services
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject ToastService Toast
+
+@if (IsOpen)
+{
+    <div class="modal-overlay" @onclick="Close"></div>
+    <div class="task-assign-modal">
+        <div class="modal-header">
+            <h2>Assign Task</h2>
+            <button class="modal-close-btn" @onclick="Close">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        </div>
+
+        <div class="modal-body">
+            <!-- Agent Selection -->
+            <div class="form-section">
+                <label class="form-label">Select Agent(s)</label>
+                <div class="agent-search">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"></circle>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                    </svg>
+                    <input type="text" placeholder="Search agents..." @bind="_searchTerm" @bind:event="oninput" />
+                </div>
+
+                <div class="agent-list">
+                    @foreach (var agent in FilteredAgents)
+                    {
+                        var isSelected = _selectedAgents.Any(a => a.Id == agent.Id);
+                        <div class="agent-item @(isSelected ? "selected" : "")" @onclick="() => ToggleAgent(agent)">
+                            <div class="agent-checkbox">
+                                @if (isSelected)
+                                {
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                                        <polyline points="20 6 9 17 4 12"></polyline>
+                                    </svg>
+                                }
+                            </div>
+                            <span class="status-dot @GetStatusClass(agent.Status)"></span>
+                            <div class="agent-info">
+                                <span class="agent-name">@agent.Name</span>
+                                @if (!string.IsNullOrEmpty(agent.Role))
+                                {
+                                    <span class="agent-role">@agent.Role</span>
+                                }
+                            </div>
+                            <span class="agent-status-label">@agent.Status</span>
+                        </div>
+                    }
+                    @if (!FilteredAgents.Any())
+                    {
+                        <div class="empty-state">
+                            <span>No online agents found</span>
+                        </div>
+                    }
+                </div>
+
+                @if (_selectedAgents.Count > 0)
+                {
+                    <div class="selected-summary">
+                        <span>@_selectedAgents.Count agent(s) selected</span>
+                        <button class="btn-clear" @onclick="ClearSelection">Clear all</button>
+                    </div>
+                }
+            </div>
+
+            <!-- Task Description -->
+            <div class="form-section">
+                <label class="form-label">Task Description</label>
+                <textarea class="task-input" rows="4" placeholder="Describe what you want the agent(s) to do..."
+                          @bind="_taskDescription" @bind:event="oninput"></textarea>
+            </div>
+
+            <!-- Priority (optional) -->
+            <div class="form-section">
+                <label class="form-label">Priority</label>
+                <div class="priority-options">
+                    <button class="priority-btn @(_priority == "low" ? "selected" : "")" @onclick='() => _priority = "low"'>
+                        <span class="priority-dot low"></span>
+                        Low
+                    </button>
+                    <button class="priority-btn @(_priority == "normal" ? "selected" : "")" @onclick='() => _priority = "normal"'>
+                        <span class="priority-dot normal"></span>
+                        Normal
+                    </button>
+                    <button class="priority-btn @(_priority == "high" ? "selected" : "")" @onclick='() => _priority = "high"'>
+                        <span class="priority-dot high"></span>
+                        High
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="modal-footer">
+            <button class="btn btn-secondary" @onclick="Close">Cancel</button>
+            <button class="btn btn-primary" @onclick="SendTask" disabled="@(!CanSend)">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="22" y1="2" x2="11" y2="13"></line>
+                    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                </svg>
+                Assign Task
+            </button>
+        </div>
+    </div>
+}
+
+<style>
+    .modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.5);
+        backdrop-filter: blur(4px);
+        z-index: 1000;
+        animation: fadeIn 0.15s ease;
+    }
+
+    .task-assign-modal {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 100%;
+        max-width: 520px;
+        max-height: 85vh;
+        background: var(--bg-card);
+        border-radius: var(--radius-xl);
+        box-shadow: var(--shadow-xl);
+        z-index: 1001;
+        display: flex;
+        flex-direction: column;
+        animation: slideUp 0.2s ease;
+    }
+
+    @@keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+    }
+
+    @@keyframes slideUp {
+        from { opacity: 0; transform: translate(-50%, -48%); }
+        to { opacity: 1; transform: translate(-50%, -50%); }
+    }
+
+    .modal-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 20px 24px;
+        border-bottom: 1px solid var(--border-light);
+    }
+
+    .modal-header h2 {
+        font-size: 18px;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin: 0;
+    }
+
+    .modal-close-btn {
+        width: 32px;
+        height: 32px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: transparent;
+        border: none;
+        border-radius: var(--radius-md);
+        color: var(--text-tertiary);
+        cursor: pointer;
+        transition: all 0.15s ease;
+    }
+
+    .modal-close-btn:hover {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+    }
+
+    .modal-body {
+        flex: 1;
+        overflow-y: auto;
+        padding: 24px;
+    }
+
+    .form-section {
+        margin-bottom: 24px;
+    }
+
+    .form-section:last-child {
+        margin-bottom: 0;
+    }
+
+    .form-label {
+        display: block;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-secondary);
+        margin-bottom: 10px;
+    }
+
+    .agent-search {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 14px;
+        background: var(--bg-hover);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        margin-bottom: 12px;
+    }
+
+    .agent-search svg {
+        color: var(--text-tertiary);
+        flex-shrink: 0;
+    }
+
+    .agent-search input {
+        flex: 1;
+        background: transparent;
+        border: none;
+        font-size: 14px;
+        color: var(--text-primary);
+        outline: none;
+    }
+
+    .agent-search input::placeholder {
+        color: var(--text-tertiary);
+    }
+
+    .agent-list {
+        max-height: 200px;
+        overflow-y: auto;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+    }
+
+    .agent-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 14px;
+        cursor: pointer;
+        transition: background 0.15s ease;
+        border-bottom: 1px solid var(--border-light);
+    }
+
+    .agent-item:last-child {
+        border-bottom: none;
+    }
+
+    .agent-item:hover {
+        background: var(--bg-hover);
+    }
+
+    .agent-item.selected {
+        background: var(--bg-active);
+    }
+
+    .agent-checkbox {
+        width: 20px;
+        height: 20px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: 2px solid var(--border);
+        border-radius: 4px;
+        flex-shrink: 0;
+        transition: all 0.15s ease;
+    }
+
+    .agent-item.selected .agent-checkbox {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: white;
+    }
+
+    .agent-info {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .agent-name {
+        display: block;
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--text-primary);
+    }
+
+    .agent-role {
+        display: block;
+        font-size: 12px;
+        color: var(--text-tertiary);
+    }
+
+    .agent-status-label {
+        font-size: 11px;
+        padding: 2px 8px;
+        background: var(--bg-hover);
+        border-radius: var(--radius-full);
+        color: var(--text-tertiary);
+        text-transform: capitalize;
+    }
+
+    .empty-state {
+        padding: 32px;
+        text-align: center;
+        color: var(--text-tertiary);
+        font-size: 13px;
+    }
+
+    .selected-summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-top: 12px;
+        padding: 10px 14px;
+        background: var(--bg-active);
+        border-radius: var(--radius-md);
+        font-size: 13px;
+        color: var(--accent);
+    }
+
+    .btn-clear {
+        background: none;
+        border: none;
+        color: var(--text-secondary);
+        font-size: 12px;
+        cursor: pointer;
+    }
+
+    .btn-clear:hover {
+        color: var(--danger);
+    }
+
+    .task-input {
+        width: 100%;
+        padding: 14px 16px;
+        background: var(--bg-hover);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        font-size: 14px;
+        color: var(--text-primary);
+        resize: none;
+        transition: all 0.15s ease;
+        font-family: inherit;
+    }
+
+    .task-input:focus {
+        outline: none;
+        border-color: var(--accent);
+        background: var(--bg-card);
+    }
+
+    .task-input::placeholder {
+        color: var(--text-tertiary);
+    }
+
+    .priority-options {
+        display: flex;
+        gap: 8px;
+    }
+
+    .priority-btn {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 10px 16px;
+        background: var(--bg-hover);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-secondary);
+        cursor: pointer;
+        transition: all 0.15s ease;
+    }
+
+    .priority-btn:hover {
+        border-color: var(--text-tertiary);
+    }
+
+    .priority-btn.selected {
+        border-color: var(--accent);
+        background: var(--bg-active);
+        color: var(--text-primary);
+    }
+
+    .priority-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+    }
+
+    .priority-dot.low { background: var(--success); }
+    .priority-dot.normal { background: var(--warning); }
+    .priority-dot.high { background: var(--danger); }
+
+    .modal-footer {
+        display: flex;
+        justify-content: flex-end;
+        gap: 12px;
+        padding: 16px 24px;
+        border-top: 1px solid var(--border-light);
+    }
+
+    .modal-footer .btn {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .btn {
+        padding: 10px 20px;
+        border-radius: var(--radius-md);
+        font-size: 14px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.15s ease;
+    }
+
+    .btn-secondary {
+        background: var(--bg-hover);
+        border: 1px solid var(--border);
+        color: var(--text-primary);
+    }
+
+    .btn-secondary:hover {
+        background: var(--bg-active);
+    }
+
+    .btn-primary {
+        background: var(--accent);
+        border: none;
+        color: white;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+        background: var(--accent-hover);
+    }
+
+    .btn-primary:disabled {
+        background: var(--text-tertiary);
+        cursor: not-allowed;
+    }
+</style>
+
+@code {
+    [Parameter] public bool IsOpen { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<(List<Agent> agents, string task, string priority)> OnTaskAssigned { get; set; }
+
+    private List<Agent> _agents = new();
+    private List<Agent> _selectedAgents = new();
+    private string _taskDescription = "";
+    private string _searchTerm = "";
+    private string _priority = "normal";
+
+    private bool CanSend => _selectedAgents.Count > 0 && !string.IsNullOrWhiteSpace(_taskDescription);
+
+    private IEnumerable<Agent> FilteredAgents => string.IsNullOrWhiteSpace(_searchTerm)
+        ? _agents.Where(a => a.Status != AgentStatus.Offline)
+        : _agents.Where(a => a.Status != AgentStatus.Offline &&
+            (a.Name.Contains(_searchTerm, StringComparison.OrdinalIgnoreCase) ||
+             (a.Role?.Contains(_searchTerm, StringComparison.OrdinalIgnoreCase) ?? false)));
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (IsOpen && _agents.Count == 0)
+        {
+            await LoadAgents();
+        }
+    }
+
+    private async Task LoadAgents()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _agents = await db.Agents.OrderBy(a => a.Name).ToListAsync();
+    }
+
+    private void ToggleAgent(Agent agent)
+    {
+        var existing = _selectedAgents.FirstOrDefault(a => a.Id == agent.Id);
+        if (existing != null)
+        {
+            _selectedAgents.Remove(existing);
+        }
+        else
+        {
+            _selectedAgents.Add(agent);
+        }
+    }
+
+    private void ClearSelection()
+    {
+        _selectedAgents.Clear();
+    }
+
+    private async Task Close()
+    {
+        ResetForm();
+        await OnClose.InvokeAsync();
+    }
+
+    private void ResetForm()
+    {
+        _selectedAgents.Clear();
+        _taskDescription = "";
+        _searchTerm = "";
+        _priority = "normal";
+    }
+
+    private async Task SendTask()
+    {
+        if (!CanSend) return;
+
+        var agents = _selectedAgents.ToList();
+        var task = _taskDescription;
+        var priority = _priority;
+
+        // Notify parent
+        await OnTaskAssigned.InvokeAsync((agents, task, priority));
+
+        // Show toast
+        if (agents.Count == 1)
+        {
+            Toast.Success($"Task assigned to {agents[0].Name}");
+        }
+        else
+        {
+            Toast.Success($"Task assigned to {agents.Count} agents");
+        }
+
+        await Close();
+    }
+
+    private string GetStatusClass(AgentStatus status) => status switch
+    {
+        AgentStatus.Online => "status-online",
+        AgentStatus.Working => "status-working",
+        AgentStatus.Error => "status-error",
+        _ => "status-offline"
+    };
+}

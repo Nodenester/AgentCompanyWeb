@@ -1,0 +1,408 @@
+@using AgentCompanyWeb.Data
+@using AgentCompanyWeb.Data.Models
+@using Microsoft.EntityFrameworkCore
+@using Microsoft.AspNetCore.SignalR.Client
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Nav
+@implements IAsyncDisposable
+
+<div class="activity-timeline">
+    <div class="timeline-header">
+        <h3 class="timeline-title">Live Activity</h3>
+        <div class="timeline-controls">
+            <div class="timeline-filters">
+                <button class="filter-btn @(_filter == "all" ? "active" : "")" @onclick='() => SetFilter("all")'>All</button>
+                <button class="filter-btn @(_filter == "tasks" ? "active" : "")" @onclick='() => SetFilter("tasks")'>Tasks</button>
+                <button class="filter-btn @(_filter == "messages" ? "active" : "")" @onclick='() => SetFilter("messages")'>Messages</button>
+                <button class="filter-btn @(_filter == "status" ? "active" : "")" @onclick='() => SetFilter("status")'>Status</button>
+                <button class="filter-btn @(_filter == "errors" ? "active" : "")" @onclick='() => SetFilter("errors")'>Errors</button>
+            </div>
+            <button class="timeline-pause-btn @(_isPaused ? "paused" : "")" @onclick="TogglePause" title="@(_isPaused ? "Resume" : "Pause")">
+                @if (_isPaused)
+                {
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                    </svg>
+                }
+                else
+                {
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="6" y="4" width="4" height="16"></rect>
+                        <rect x="14" y="4" width="4" height="16"></rect>
+                    </svg>
+                }
+            </button>
+        </div>
+    </div>
+
+    <div class="timeline-content">
+        @if (_isPaused)
+        {
+            <div class="timeline-paused-banner">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="6" y="4" width="4" height="16"></rect>
+                    <rect x="14" y="4" width="4" height="16"></rect>
+                </svg>
+                <span>Paused - @_pendingActivities.Count new events waiting</span>
+            </div>
+        }
+
+        @if (_filteredActivities.Count == 0)
+        {
+            <div class="timeline-empty">
+                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <polyline points="12 6 12 12 16 14"></polyline>
+                </svg>
+                <span>No activity yet</span>
+            </div>
+        }
+        else
+        {
+            @foreach (var activity in _filteredActivities.Take(MaxItems))
+            {
+                <ActivityTimelineItem
+                    Type="@activity.Type"
+                    Timestamp="@activity.Timestamp"
+                    AgentName="@activity.AgentName"
+                    Description="@activity.Description"
+                    Detail="@activity.Detail"
+                    OnAgentClick="() => NavigateToAgent(activity.AgentId)" />
+            }
+        }
+    </div>
+</div>
+
+<style>
+    .activity-timeline {
+        display: flex;
+        flex-direction: column;
+        background: var(--bg-card);
+        border-radius: var(--radius-lg);
+        border: 1px solid var(--border-light);
+        overflow: hidden;
+        height: 100%;
+    }
+
+    .timeline-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 16px;
+        border-bottom: 1px solid var(--border-light);
+        flex-shrink: 0;
+    }
+
+    .timeline-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin: 0;
+    }
+
+    .timeline-controls {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+
+    .timeline-filters {
+        display: flex;
+        gap: 4px;
+        background: var(--bg-hover);
+        padding: 3px;
+        border-radius: var(--radius-md);
+    }
+
+    .filter-btn {
+        padding: 4px 10px;
+        font-size: 11px;
+        font-weight: 500;
+        background: transparent;
+        border: none;
+        border-radius: var(--radius-sm);
+        color: var(--text-secondary);
+        cursor: pointer;
+        transition: all 0.15s ease;
+    }
+
+    .filter-btn:hover {
+        color: var(--text-primary);
+    }
+
+    .filter-btn.active {
+        background: var(--bg-card);
+        color: var(--accent);
+        box-shadow: var(--shadow-xs);
+    }
+
+    .timeline-pause-btn {
+        width: 32px;
+        height: 32px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--bg-hover);
+        border: none;
+        border-radius: var(--radius-md);
+        color: var(--text-secondary);
+        cursor: pointer;
+        transition: all 0.15s ease;
+    }
+
+    .timeline-pause-btn:hover {
+        background: var(--bg-active);
+        color: var(--accent);
+    }
+
+    .timeline-pause-btn.paused {
+        background: rgba(255, 159, 10, 0.1);
+        color: var(--warning);
+    }
+
+    .timeline-content {
+        flex: 1;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .timeline-paused-banner {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 8px;
+        background: rgba(255, 159, 10, 0.1);
+        color: var(--warning);
+        font-size: 12px;
+        font-weight: 500;
+    }
+
+    .timeline-empty {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        padding: 48px;
+        color: var(--text-tertiary);
+    }
+
+    .timeline-empty svg {
+        opacity: 0.5;
+    }
+
+    .timeline-empty span {
+        font-size: 13px;
+    }
+</style>
+
+@code {
+    [Parameter] public int MaxItems { get; set; } = 50;
+    [Parameter] public int? AgentId { get; set; }
+    [Parameter] public int? TeamId { get; set; }
+
+    private List<ActivityItem> _activities = new();
+    private List<ActivityItem> _pendingActivities = new();
+    private string _filter = "all";
+    private bool _isPaused = false;
+    private HubConnection? _hubConnection;
+
+    private List<ActivityItem> _filteredActivities => _filter switch
+    {
+        "tasks" => _activities.Where(a => a.Type is ActivityType.TaskStarted or ActivityType.TaskCompleted or ActivityType.TaskFailed).ToList(),
+        "messages" => _activities.Where(a => a.Type == ActivityType.Message).ToList(),
+        "status" => _activities.Where(a => a.Type == ActivityType.StatusChange).ToList(),
+        "errors" => _activities.Where(a => a.Type is ActivityType.Error or ActivityType.TaskFailed).ToList(),
+        _ => _activities
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadRecentActivity();
+        await ConnectToSignalR();
+    }
+
+    private async Task LoadRecentActivity()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        // Load recent messages as activity
+        var recentMessages = await db.NetworkMessages
+            .OrderByDescending(m => m.Timestamp)
+            .Take(20)
+            .ToListAsync();
+
+        foreach (var msg in recentMessages)
+        {
+            _activities.Add(new ActivityItem
+            {
+                Type = ActivityType.Message,
+                Timestamp = msg.Timestamp,
+                AgentName = msg.From,
+                Description = msg.IsDirectMessage ? $"Sent DM to {msg.To}" : $"Posted in {msg.GroupName}",
+                Detail = msg.Content.Length > 100 ? msg.Content[..100] + "..." : msg.Content
+            });
+        }
+
+        // Load recent agent status changes (from agents table - last activity)
+        var recentAgents = await db.Agents
+            .OrderByDescending(a => a.LastActivityAt)
+            .Take(10)
+            .ToListAsync();
+
+        foreach (var agent in recentAgents.Where(a => a.Status != AgentStatus.Offline))
+        {
+            _activities.Add(new ActivityItem
+            {
+                Type = agent.Status == AgentStatus.Working ? ActivityType.TaskStarted : ActivityType.StatusChange,
+                Timestamp = agent.LastActivityAt,
+                AgentId = agent.Id,
+                AgentName = agent.Name,
+                Description = agent.Status == AgentStatus.Working
+                    ? $"Started working"
+                    : $"Status: {agent.Status}",
+                Detail = agent.CurrentTask
+            });
+        }
+
+        // Sort all activities by timestamp
+        _activities = _activities.OrderByDescending(a => a.Timestamp).ToList();
+    }
+
+    private async Task ConnectToSignalR()
+    {
+        try
+        {
+            _hubConnection = new HubConnectionBuilder()
+                .WithUrl(Nav.ToAbsoluteUri("/hubs/agentnetwork"))
+                .WithAutomaticReconnect()
+                .Build();
+
+            _hubConnection.On<dynamic>("AgentStatusChanged", async (status) =>
+            {
+                await InvokeAsync(() =>
+                {
+                    string agentName = status.agentName?.ToString() ?? "";
+                    string newStatus = status.status?.ToString() ?? "";
+                    string? task = status.task?.ToString();
+
+                    var activityType = newStatus switch
+                    {
+                        "working" => ActivityType.TaskStarted,
+                        "error" => ActivityType.Error,
+                        _ => ActivityType.StatusChange
+                    };
+
+                    var activity = new ActivityItem
+                    {
+                        Type = activityType,
+                        Timestamp = DateTime.Now,
+                        AgentName = agentName,
+                        Description = newStatus == "working"
+                            ? "Started task"
+                            : $"Status changed to {newStatus}",
+                        Detail = task
+                    };
+
+                    AddActivity(activity);
+                    StateHasChanged();
+                });
+            });
+
+            _hubConnection.On<dynamic>("NewMessage", async (msg) =>
+            {
+                await InvokeAsync(() =>
+                {
+                    string from = msg.from?.ToString() ?? "";
+                    string? to = msg.to?.ToString();
+                    string? groupName = msg.groupName?.ToString();
+                    string content = msg.content?.ToString() ?? "";
+                    bool isDm = msg.isDirectMessage ?? false;
+
+                    var activity = new ActivityItem
+                    {
+                        Type = ActivityType.Message,
+                        Timestamp = DateTime.Now,
+                        AgentName = from,
+                        Description = isDm ? $"Sent DM to {to}" : $"Posted in {groupName}",
+                        Detail = content.Length > 100 ? content[..100] + "..." : content
+                    };
+
+                    AddActivity(activity);
+                    StateHasChanged();
+                });
+            });
+
+            await _hubConnection.StartAsync();
+        }
+        catch { }
+    }
+
+    private void AddActivity(ActivityItem activity)
+    {
+        if (_isPaused)
+        {
+            _pendingActivities.Insert(0, activity);
+        }
+        else
+        {
+            _activities.Insert(0, activity);
+            // Keep only max items
+            if (_activities.Count > MaxItems * 2)
+            {
+                _activities = _activities.Take(MaxItems).ToList();
+            }
+        }
+    }
+
+    private void SetFilter(string filter)
+    {
+        _filter = filter;
+    }
+
+    private void TogglePause()
+    {
+        _isPaused = !_isPaused;
+
+        if (!_isPaused && _pendingActivities.Count > 0)
+        {
+            // Add pending activities
+            _activities.InsertRange(0, _pendingActivities);
+            _pendingActivities.Clear();
+
+            // Trim list
+            if (_activities.Count > MaxItems * 2)
+            {
+                _activities = _activities.Take(MaxItems).ToList();
+            }
+        }
+    }
+
+    private void NavigateToAgent(int? agentId)
+    {
+        if (agentId.HasValue)
+        {
+            Nav.NavigateTo($"/agent/{agentId}");
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_hubConnection != null)
+        {
+            await _hubConnection.DisposeAsync();
+        }
+    }
+
+    private class ActivityItem
+    {
+        public ActivityType Type { get; set; }
+        public DateTime Timestamp { get; set; }
+        public int? AgentId { get; set; }
+        public string? AgentName { get; set; }
+        public string Description { get; set; } = "";
+        public string? Detail { get; set; }
+    }
+}

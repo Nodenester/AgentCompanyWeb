@@ -1,0 +1,1379 @@
+@page "/schedules"
+@page "/schedules/{GroupId:int}"
+@using AgentCompanyWeb.Data
+@using AgentCompanyWeb.Data.Models
+@using AgentCompanyWeb.Services
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject CronJobService CronJobService
+@inject TriggerService TriggerService
+@inject NavigationManager NavigationManager
+@rendermode InteractiveServer
+
+<PageTitle>Schedules - Agent Company</PageTitle>
+
+<div class="page-header">
+    <div class="page-header-left">
+        <h1 class="page-title">Schedules</h1>
+        @if (_groups.Count > 0)
+        {
+            <select class="form-select group-select" @bind="_selectedGroupId" @bind:after="LoadData">
+                @foreach (var group in _groups)
+                {
+                    <option value="@group.Id">@group.Name</option>
+                }
+            </select>
+        }
+    </div>
+    <div class="page-actions">
+        <button class="btn btn-primary" @onclick="OpenCreatePanel">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+            @(_activeTab == "cron" ? "New Cron Job" : "New Trigger")
+        </button>
+    </div>
+</div>
+
+<div class="page-body">
+    <!-- Tabs -->
+    <div class="tab-bar">
+        <button class="tab-item @(_activeTab == "cron" ? "active" : "")" @onclick="SwitchToCron">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"></circle>
+                <polyline points="12 6 12 12 16 14"></polyline>
+            </svg>
+            Cron Jobs
+            <span class="tab-badge">@_cronJobs.Count</span>
+        </button>
+        <button class="tab-item @(_activeTab == "triggers" ? "active" : "")" @onclick="SwitchToTriggers">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+            </svg>
+            Triggers
+            <span class="tab-badge">@_triggers.Count</span>
+        </button>
+        <button class="tab-item @(_activeTab == "logs" ? "active" : "")" @onclick="SwitchToLogs">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="16" y1="13" x2="8" y2="13"></line>
+                <line x1="16" y1="17" x2="8" y2="17"></line>
+            </svg>
+            Execution Logs
+        </button>
+    </div>
+
+    @if (_loading)
+    {
+        <div class="loading-state">
+            <div class="spinner"></div>
+            <span>Loading schedules...</span>
+        </div>
+    }
+    else if (_groups.Count == 0)
+    {
+        <div class="empty-state">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+            </svg>
+            <div class="empty-state-title">No groups yet</div>
+            <div class="empty-state-text">Create a group first to add scheduled jobs.</div>
+            <button class="btn btn-primary mt-4" @onclick="GoToGroups">Go to Groups</button>
+        </div>
+    }
+    else if (_activeTab == "cron")
+    {
+        @if (_cronJobs.Count == 0)
+        {
+            <div class="empty-state">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <polyline points="12 6 12 12 16 14"></polyline>
+                </svg>
+                <div class="empty-state-title">No cron jobs</div>
+                <div class="empty-state-text">Schedule recurring tasks to prompt agents or send messages automatically.</div>
+                <button class="btn btn-primary mt-4" @onclick="OpenCreatePanel">Create Cron Job</button>
+            </div>
+        }
+        else
+        {
+            <div class="schedule-list">
+                @foreach (var job in _cronJobs)
+                {
+                    <div class="schedule-card @(job.Enabled ? "" : "disabled")" @onclick="() => OpenEditCronJob(job)">
+                        <div class="schedule-card-header">
+                            <div class="schedule-card-title">
+                                <span class="schedule-name">@job.Name</span>
+                                <span class="schedule-type-badge">@GetScheduleTypeName(job.ScheduleType)</span>
+                            </div>
+                            <label class="toggle" @onclick:stopPropagation="true">
+                                <input type="checkbox" checked="@job.Enabled" @onchange="() => ToggleCronJob(job)" />
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="schedule-card-body">
+                            <div class="schedule-detail">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <circle cx="12" cy="12" r="10"></circle>
+                                    <polyline points="12 6 12 12 16 14"></polyline>
+                                </svg>
+                                <span>@CronExpressionParser.GetScheduleDescription(job)</span>
+                            </div>
+                            <div class="schedule-detail">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                                    <circle cx="12" cy="7" r="4"></circle>
+                                </svg>
+                                <span>@GetActionTarget(job)</span>
+                            </div>
+                            @if (job.NextRunAt.HasValue)
+                            {
+                                <div class="schedule-detail">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <polyline points="23 4 23 10 17 10"></polyline>
+                                        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                                    </svg>
+                                    <span>Next: @FormatInJobTimezone(job.NextRunAt.Value, job.Timezone)</span>
+                                </div>
+                            }
+                        </div>
+                        <div class="schedule-card-footer">
+                            <span class="schedule-stat">
+                                @job.ExecutionCount executions
+                            </span>
+                            @if (job.LastRunAt.HasValue)
+                            {
+                                <span class="schedule-stat @(job.LastRunStatus == JobExecutionStatus.Success ? "success" : job.LastRunStatus == JobExecutionStatus.Failed ? "error" : "")">
+                                    Last: @GetRelativeTime(job.LastRunAt.Value)
+                                </span>
+                            }
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    }
+    else if (_activeTab == "triggers")
+    {
+        @if (_triggers.Count == 0)
+        {
+            <div class="empty-state">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                </svg>
+                <div class="empty-state-title">No triggers</div>
+                <div class="empty-state-text">Create event-based triggers to automatically respond to agent status changes, messages, and more.</div>
+                <button class="btn btn-primary mt-4" @onclick="OpenCreatePanel">Create Trigger</button>
+            </div>
+        }
+        else
+        {
+            <div class="schedule-list">
+                @foreach (var trigger in _triggers)
+                {
+                    <div class="schedule-card @(trigger.Enabled ? "" : "disabled")" @onclick="() => OpenEditTrigger(trigger)">
+                        <div class="schedule-card-header">
+                            <div class="schedule-card-title">
+                                <span class="schedule-name">@trigger.Name</span>
+                                <span class="schedule-type-badge trigger">@trigger.EventType</span>
+                            </div>
+                            <label class="toggle" @onclick:stopPropagation="true">
+                                <input type="checkbox" checked="@trigger.Enabled" @onchange="() => ToggleTrigger(trigger)" />
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="schedule-card-body">
+                            <div class="schedule-detail">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                                </svg>
+                                <span>@TriggerService.GetEventTypeDescription(trigger.EventType)</span>
+                            </div>
+                            <div class="schedule-detail">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                                    <circle cx="12" cy="7" r="4"></circle>
+                                </svg>
+                                <span>@GetTriggerTarget(trigger)</span>
+                            </div>
+                        </div>
+                        <div class="schedule-card-footer">
+                            <span class="schedule-stat">
+                                @trigger.TriggerCount triggers
+                            </span>
+                            @if (trigger.LastTriggeredAt.HasValue)
+                            {
+                                <span class="schedule-stat">
+                                    Last: @GetRelativeTime(trigger.LastTriggeredAt.Value)
+                                </span>
+                            }
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    }
+    else if (_activeTab == "logs")
+    {
+        <div class="log-list">
+            @if (_cronJobLogs.Count == 0 && _triggerLogs.Count == 0)
+            {
+                <div class="empty-state">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                    </svg>
+                    <div class="empty-state-title">No execution logs</div>
+                    <div class="empty-state-text">Logs will appear here when cron jobs or triggers execute.</div>
+                </div>
+            }
+            else
+            {
+                <table class="log-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Type</th>
+                            <th>Name</th>
+                            <th>Target</th>
+                            <th>Status</th>
+                            <th>Duration</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var log in GetCombinedLogs())
+                        {
+                            <tr class="@(log.Status == JobExecutionStatus.Failed ? "error" : log.Status == JobExecutionStatus.Skipped ? "skipped" : "")">
+                                <td>@FormatUtcToLocal(log.ExecutedAt)</td>
+                                <td><span class="log-type-badge @(log.IsCronJob ? "cron" : "trigger")">@(log.IsCronJob ? "Cron" : "Trigger")</span></td>
+                                <td>@log.Name</td>
+                                <td>@log.Target</td>
+                                <td>
+                                    <span class="status-badge @log.Status.ToString().ToLower()">
+                                        @log.Status
+                                    </span>
+                                </td>
+                                <td>@(log.DurationMs.HasValue ? $"{log.DurationMs}ms" : "-")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    }
+</div>
+
+<!-- Cron Job Panel -->
+<div class="modal-overlay @(_cronPanelOpen ? "active" : "")" @onclick="ClosePanel"></div>
+<div class="slide-panel @(_cronPanelOpen ? "active" : "")">
+    <div class="slide-panel-header">
+        <span class="slide-panel-title">@(_editingCronJob != null ? "Edit Cron Job" : "New Cron Job")</span>
+        <button class="btn btn-ghost btn-icon" @onclick="ClosePanel">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+        </button>
+    </div>
+    <div class="slide-panel-body">
+        <div class="form-group">
+            <label class="form-label">Name</label>
+            <input type="text" class="form-input" placeholder="e.g., Daily Standup Reminder" @bind="_cronForm.Name" />
+        </div>
+        <div class="form-group">
+            <label class="form-label">Description</label>
+            <input type="text" class="form-input" placeholder="Optional description" @bind="_cronForm.Description" />
+        </div>
+
+        <div class="form-divider"></div>
+
+        <div class="form-group">
+            <label class="form-label">Schedule Type</label>
+            <select class="form-select" @bind="_cronForm.ScheduleType">
+                <option value="@ScheduleType.Interval">Interval (every X minutes)</option>
+                <option value="@ScheduleType.Daily">Daily</option>
+                <option value="@ScheduleType.Weekly">Weekly</option>
+                <option value="@ScheduleType.Monthly">Monthly</option>
+                <option value="@ScheduleType.Cron">Cron Expression</option>
+                <option value="@ScheduleType.OneTime">One-Time</option>
+            </select>
+        </div>
+
+        @if (_cronForm.ScheduleType == ScheduleType.Interval)
+        {
+            <div class="form-group">
+                <label class="form-label">Run Every (minutes)</label>
+                <input type="number" class="form-input" min="1" max="1440" @bind="_cronForm.IntervalMinutes" />
+            </div>
+        }
+        else if (_cronForm.ScheduleType == ScheduleType.Daily)
+        {
+            <div class="form-group">
+                <label class="form-label">Time (HH:mm)</label>
+                <input type="text" class="form-input" placeholder="09:00" @bind="_cronForm.TimeOfDay" />
+            </div>
+        }
+        else if (_cronForm.ScheduleType == ScheduleType.Weekly)
+        {
+            <div class="form-group">
+                <label class="form-label">Time (HH:mm)</label>
+                <input type="text" class="form-input" placeholder="09:00" @bind="_cronForm.TimeOfDay" />
+            </div>
+            <div class="form-group">
+                <label class="form-label">Days</label>
+                <div class="day-picker">
+                    @for (int i = 0; i < 7; i++)
+                    {
+                        var dayIndex = i;
+                        var dayName = new[] { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" }[i];
+                        <label class="day-option">
+                            <input type="checkbox" checked="@IsDaySelected(dayIndex)" @onchange="@(() => ToggleDay(dayIndex))" />
+                            <span>@dayName</span>
+                        </label>
+                    }
+                </div>
+            </div>
+        }
+        else if (_cronForm.ScheduleType == ScheduleType.Monthly)
+        {
+            <div class="form-group">
+                <label class="form-label">Day of Month</label>
+                <input type="number" class="form-input" min="1" max="31" @bind="_cronForm.DayOfMonth" />
+                <span class="form-hint">Use 0 for last day of month</span>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Time (HH:mm)</label>
+                <input type="text" class="form-input" placeholder="09:00" @bind="_cronForm.TimeOfDay" />
+            </div>
+        }
+        else if (_cronForm.ScheduleType == ScheduleType.Cron)
+        {
+            <div class="form-group">
+                <label class="form-label">Cron Expression</label>
+                <input type="text" class="form-input" placeholder="*/15 * * * *" @bind="_cronForm.CronExpression" />
+                <span class="form-hint">Format: minute hour day-of-month month day-of-week</span>
+            </div>
+        }
+        else if (_cronForm.ScheduleType == ScheduleType.OneTime)
+        {
+            <div class="form-group">
+                <label class="form-label">Date & Time</label>
+                <input type="datetime-local" class="form-input" @bind="_cronForm.OneTimeDate" />
+            </div>
+        }
+
+        <div class="form-group">
+            <label class="form-label">Timezone</label>
+            <select class="form-select" @bind="_cronForm.Timezone">
+                @foreach (var tz in _timezones)
+                {
+                    <option value="@tz.Id">@tz.DisplayName</option>
+                }
+            </select>
+        </div>
+
+        <div class="form-divider"></div>
+
+        <div class="form-group">
+            <label class="form-label">Action</label>
+            <select class="form-select" @bind="_cronForm.ActionType">
+                <option value="@JobActionType.PromptAgent">Prompt Agent</option>
+                <option value="@JobActionType.SendDirectMessage">Send Direct Message</option>
+                <option value="@JobActionType.SendTeamMessage">Send Team Message</option>
+                <option value="@JobActionType.StartAgent">Start Agent</option>
+                <option value="@JobActionType.StopAgent">Stop Agent</option>
+                <option value="@JobActionType.RestartAgent">Restart Agent</option>
+            </select>
+        </div>
+
+        @if (_cronForm.ActionType == JobActionType.PromptAgent || _cronForm.ActionType == JobActionType.SendDirectMessage ||
+             _cronForm.ActionType == JobActionType.StartAgent || _cronForm.ActionType == JobActionType.StopAgent ||
+             _cronForm.ActionType == JobActionType.RestartAgent)
+        {
+            <div class="form-group">
+                <label class="form-label">Target Agent</label>
+                <select class="form-select" @bind="_cronForm.TargetAgentId">
+                    <option value="">Select an agent...</option>
+                    @foreach (var agent in _agents)
+                    {
+                        <option value="@agent.Id">@agent.Name</option>
+                    }
+                </select>
+            </div>
+        }
+
+        @if (_cronForm.ActionType == JobActionType.SendTeamMessage)
+        {
+            <div class="form-group">
+                <label class="form-label">Target Team</label>
+                <select class="form-select" @bind="_cronForm.TargetTeamId">
+                    <option value="">Select a team...</option>
+                    @foreach (var team in _teams)
+                    {
+                        <option value="@team.Id">@team.Name</option>
+                    }
+                </select>
+            </div>
+        }
+
+        @if (_cronForm.ActionType == JobActionType.PromptAgent || _cronForm.ActionType == JobActionType.SendDirectMessage ||
+             _cronForm.ActionType == JobActionType.SendTeamMessage)
+        {
+            <div class="form-group">
+                <label class="form-label">Message</label>
+                <textarea class="form-textarea" rows="4" placeholder="Enter the message or prompt..." @bind="_cronForm.MessageTemplate"></textarea>
+                <span class="form-hint">Variables: {date}, {time}, {agent_name}, {team_name}, {group_name}</span>
+            </div>
+        }
+
+        <div class="form-divider"></div>
+
+        <div class="form-group">
+            <label class="form-label">Options</label>
+            <label class="checkbox-label">
+                <input type="checkbox" @bind="_cronForm.SkipIfAgentOffline" />
+                Skip if target agent is offline
+            </label>
+            <label class="checkbox-label">
+                <input type="checkbox" @bind="_cronForm.RetryOnFailure" />
+                Retry on failure
+            </label>
+        </div>
+    </div>
+    <div class="slide-panel-footer">
+        @if (_editingCronJob != null)
+        {
+            <button class="btn btn-ghost danger" @onclick="DeleteCronJob">Delete</button>
+        }
+        <button class="btn btn-secondary" @onclick="ClosePanel">Cancel</button>
+        <button class="btn btn-primary" @onclick="SaveCronJob" disabled="@_saving">
+            @(_saving ? "Saving..." : "Save")
+        </button>
+    </div>
+</div>
+
+<!-- Trigger Panel -->
+<div class="modal-overlay @(_triggerPanelOpen ? "active" : "")" @onclick="ClosePanel"></div>
+<div class="slide-panel @(_triggerPanelOpen ? "active" : "")">
+    <div class="slide-panel-header">
+        <span class="slide-panel-title">@(_editingTrigger != null ? "Edit Trigger" : "New Trigger")</span>
+        <button class="btn btn-ghost btn-icon" @onclick="ClosePanel">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+        </button>
+    </div>
+    <div class="slide-panel-body">
+        <div class="form-group">
+            <label class="form-label">Name</label>
+            <input type="text" class="form-input" placeholder="e.g., Notify on Agent Error" @bind="_triggerForm.Name" />
+        </div>
+        <div class="form-group">
+            <label class="form-label">Description</label>
+            <input type="text" class="form-input" placeholder="Optional description" @bind="_triggerForm.Description" />
+        </div>
+
+        <div class="form-divider"></div>
+
+        <div class="form-group">
+            <label class="form-label">Trigger When</label>
+            <select class="form-select" @bind="_triggerForm.EventType">
+                <option value="@TriggerEventType.AgentOnline">Agent comes online</option>
+                <option value="@TriggerEventType.AgentOffline">Agent goes offline</option>
+                <option value="@TriggerEventType.AgentStartedWorking">Agent starts working</option>
+                <option value="@TriggerEventType.AgentFinishedWorking">Agent finishes working</option>
+                <option value="@TriggerEventType.AgentStatusChanged">Agent status changes</option>
+                <option value="@TriggerEventType.AgentTaskChanged">Agent task changes</option>
+                <option value="@TriggerEventType.AgentError">Agent error occurs</option>
+                <option value="@TriggerEventType.DirectMessageReceived">Direct message received</option>
+                <option value="@TriggerEventType.TeamMessageReceived">Team message received</option>
+                <option value="@TriggerEventType.FileCreated">File created</option>
+                <option value="@TriggerEventType.FileModified">File modified</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">From Agent (optional)</label>
+            <select class="form-select" @bind="_triggerForm.SourceAgentId">
+                <option value="">Any agent in group</option>
+                @foreach (var agent in _agents)
+                {
+                    <option value="@agent.Id">@agent.Name</option>
+                }
+            </select>
+        </div>
+
+        <div class="form-divider"></div>
+
+        <div class="form-group">
+            <label class="form-label">Action</label>
+            <select class="form-select" @bind="_triggerForm.ActionType">
+                <option value="@JobActionType.PromptAgent">Prompt Agent</option>
+                <option value="@JobActionType.SendDirectMessage">Send Direct Message</option>
+                <option value="@JobActionType.SendTeamMessage">Send Team Message</option>
+            </select>
+        </div>
+
+        @if (_triggerForm.ActionType == JobActionType.PromptAgent || _triggerForm.ActionType == JobActionType.SendDirectMessage)
+        {
+            <div class="form-group">
+                <label class="form-label">Target Agent</label>
+                <select class="form-select" @bind="_triggerForm.TargetAgentId">
+                    <option value="">Select an agent...</option>
+                    @foreach (var agent in _agents)
+                    {
+                        <option value="@agent.Id">@agent.Name</option>
+                    }
+                </select>
+            </div>
+        }
+
+        @if (_triggerForm.ActionType == JobActionType.SendTeamMessage)
+        {
+            <div class="form-group">
+                <label class="form-label">Target Team</label>
+                <select class="form-select" @bind="_triggerForm.TargetTeamId">
+                    <option value="">Select a team...</option>
+                    @foreach (var team in _teams)
+                    {
+                        <option value="@team.Id">@team.Name</option>
+                    }
+                </select>
+            </div>
+        }
+
+        <div class="form-group">
+            <label class="form-label">Message</label>
+            <textarea class="form-textarea" rows="4" placeholder="Enter the message..." @bind="_triggerForm.MessageTemplate"></textarea>
+            <span class="form-hint">Variables: {event_type}, {agent_name}, {status}, {error}, {message}</span>
+        </div>
+
+        <div class="form-divider"></div>
+
+        <div class="form-group">
+            <label class="form-label">Delay (seconds)</label>
+            <input type="number" class="form-input" min="0" @bind="_triggerForm.DelaySeconds" />
+            <span class="form-hint">Wait before executing action</span>
+        </div>
+        <div class="form-group">
+            <label class="form-label">Cooldown (seconds)</label>
+            <input type="number" class="form-input" min="0" @bind="_triggerForm.CooldownSeconds" />
+            <span class="form-hint">Minimum time between triggers</span>
+        </div>
+    </div>
+    <div class="slide-panel-footer">
+        @if (_editingTrigger != null)
+        {
+            <button class="btn btn-ghost danger" @onclick="DeleteTrigger">Delete</button>
+        }
+        <button class="btn btn-secondary" @onclick="ClosePanel">Cancel</button>
+        <button class="btn btn-primary" @onclick="SaveTrigger" disabled="@_saving">
+            @(_saving ? "Saving..." : "Save")
+        </button>
+    </div>
+</div>
+
+<style>
+    .page-header-left {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+    }
+
+    .group-select {
+        min-width: 180px;
+    }
+
+    .tab-bar {
+        display: flex;
+        gap: 4px;
+        border-bottom: 1px solid var(--border-light);
+        margin-bottom: 24px;
+    }
+
+    .tab-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 16px;
+        background: none;
+        border: none;
+        color: var(--text-secondary);
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+        transition: all var(--transition-fast);
+    }
+
+    .tab-item:hover {
+        color: var(--text-primary);
+    }
+
+    .tab-item.active {
+        color: var(--accent);
+        border-bottom-color: var(--accent);
+    }
+
+    .tab-badge {
+        background: var(--bg-secondary);
+        padding: 2px 8px;
+        border-radius: var(--radius-full);
+        font-size: 12px;
+    }
+
+    .tab-item.active .tab-badge {
+        background: rgba(0, 113, 227, 0.1);
+        color: var(--accent);
+    }
+
+    .schedule-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+        gap: 16px;
+    }
+
+    .schedule-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border-light);
+        border-radius: var(--radius-lg);
+        padding: 16px;
+        cursor: pointer;
+        transition: all var(--transition-fast);
+    }
+
+    .schedule-card:hover {
+        border-color: var(--border-medium);
+        box-shadow: var(--shadow-sm);
+    }
+
+    .schedule-card.disabled {
+        opacity: 0.6;
+    }
+
+    .schedule-card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        margin-bottom: 12px;
+    }
+
+    .schedule-card-title {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .schedule-name {
+        font-weight: 600;
+        color: var(--text-primary);
+    }
+
+    .schedule-type-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        background: var(--bg-secondary);
+        color: var(--text-secondary);
+        border-radius: var(--radius-full);
+        font-size: 11px;
+        text-transform: uppercase;
+    }
+
+    .schedule-type-badge.trigger {
+        background: rgba(147, 51, 234, 0.1);
+        color: rgb(147, 51, 234);
+    }
+
+    .schedule-card-body {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-bottom: 12px;
+    }
+
+    .schedule-detail {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        color: var(--text-secondary);
+    }
+
+    .schedule-card-footer {
+        display: flex;
+        gap: 16px;
+        padding-top: 12px;
+        border-top: 1px solid var(--border-light);
+        font-size: 12px;
+    }
+
+    .schedule-stat {
+        color: var(--text-tertiary);
+    }
+
+    .schedule-stat.success {
+        color: var(--success);
+    }
+
+    .schedule-stat.error {
+        color: var(--danger);
+    }
+
+    .toggle {
+        position: relative;
+        display: inline-block;
+        width: 40px;
+        height: 22px;
+    }
+
+    .toggle input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+    }
+
+    .toggle-slider {
+        position: absolute;
+        cursor: pointer;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: var(--bg-secondary);
+        transition: 0.2s;
+        border-radius: 22px;
+    }
+
+    .toggle-slider:before {
+        position: absolute;
+        content: "";
+        height: 16px;
+        width: 16px;
+        left: 3px;
+        bottom: 3px;
+        background-color: white;
+        transition: 0.2s;
+        border-radius: 50%;
+    }
+
+    .toggle input:checked + .toggle-slider {
+        background-color: var(--accent);
+    }
+
+    .toggle input:checked + .toggle-slider:before {
+        transform: translateX(18px);
+    }
+
+    .day-picker {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .day-option {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 6px 12px;
+        background: var(--bg-secondary);
+        border-radius: var(--radius-md);
+        cursor: pointer;
+        font-size: 13px;
+    }
+
+    .day-option:has(input:checked) {
+        background: var(--accent);
+        color: white;
+    }
+
+    .day-option input {
+        display: none;
+    }
+
+    .checkbox-label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+        cursor: pointer;
+    }
+
+    .form-hint {
+        font-size: 12px;
+        color: var(--text-tertiary);
+        margin-top: 4px;
+    }
+
+    .btn.danger {
+        color: var(--danger);
+        margin-right: auto;
+    }
+
+    .log-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+
+    .log-table th,
+    .log-table td {
+        padding: 12px;
+        text-align: left;
+        border-bottom: 1px solid var(--border-light);
+    }
+
+    .log-table th {
+        font-weight: 500;
+        color: var(--text-secondary);
+        font-size: 12px;
+        text-transform: uppercase;
+    }
+
+    .log-table tr.error td {
+        background: rgba(239, 68, 68, 0.05);
+    }
+
+    .log-table tr.skipped td {
+        opacity: 0.6;
+    }
+
+    .log-type-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: var(--radius-full);
+        font-size: 11px;
+        text-transform: uppercase;
+    }
+
+    .log-type-badge.cron {
+        background: rgba(0, 113, 227, 0.1);
+        color: var(--accent);
+    }
+
+    .log-type-badge.trigger {
+        background: rgba(147, 51, 234, 0.1);
+        color: rgb(147, 51, 234);
+    }
+
+    .status-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: var(--radius-full);
+        font-size: 11px;
+    }
+
+    .status-badge.success {
+        background: rgba(16, 185, 129, 0.1);
+        color: var(--success);
+    }
+
+    .status-badge.failed {
+        background: rgba(239, 68, 68, 0.1);
+        color: var(--danger);
+    }
+
+    .status-badge.skipped {
+        background: var(--bg-secondary);
+        color: var(--text-tertiary);
+    }
+
+    .status-badge.running {
+        background: rgba(245, 158, 11, 0.1);
+        color: rgb(245, 158, 11);
+    }
+
+    .loading-state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        padding: 48px;
+        color: var(--text-secondary);
+    }
+
+    .spinner {
+        width: 24px;
+        height: 24px;
+        border: 2px solid var(--border-light);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+    }
+
+    @@keyframes spin {
+        to { transform: rotate(360deg); }
+    }
+
+    .form-textarea {
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid var(--border-light);
+        border-radius: var(--radius-md);
+        background: var(--bg-card);
+        color: var(--text-primary);
+        font-size: 14px;
+        resize: vertical;
+    }
+
+    .form-textarea:focus {
+        outline: none;
+        border-color: var(--accent);
+    }
+
+    .form-divider {
+        height: 1px;
+        background: var(--border-light);
+        margin: 20px 0;
+    }
+</style>
+
+@code {
+    [Parameter]
+    public int? GroupId { get; set; }
+
+    private List<Group> _groups = new();
+    private List<Agent> _agents = new();
+    private List<Team> _teams = new();
+    private List<CronJob> _cronJobs = new();
+    private List<Trigger> _triggers = new();
+    private List<CronJobLog> _cronJobLogs = new();
+    private List<TriggerLog> _triggerLogs = new();
+    private List<TimeZoneInfo> _timezones = TimeZoneInfo.GetSystemTimeZones().ToList();
+
+    private int _selectedGroupId;
+    private string _activeTab = "cron";
+    private bool _loading = true;
+    private bool _saving = false;
+
+    // Panel state
+    private bool _cronPanelOpen = false;
+    private bool _triggerPanelOpen = false;
+    private CronJob? _editingCronJob = null;
+    private Trigger? _editingTrigger = null;
+
+    // Form models
+    private CronJobForm _cronForm = new();
+    private TriggerForm _triggerForm = new();
+
+    // Selected days for weekly schedule
+    private HashSet<int> _selectedDays = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _groups = await db.Groups.OrderBy(g => g.Name).ToListAsync();
+
+        if (_groups.Count > 0)
+        {
+            _selectedGroupId = GroupId ?? _groups.First().Id;
+            await LoadData();
+        }
+        else
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task LoadData()
+    {
+        _loading = true;
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        _agents = await db.Agents
+            .Where(a => a.GroupId == _selectedGroupId)
+            .OrderBy(a => a.Name)
+            .ToListAsync();
+
+        _teams = await db.Teams
+            .Where(t => t.GroupId == _selectedGroupId)
+            .OrderBy(t => t.Name)
+            .ToListAsync();
+
+        _cronJobs = await CronJobService.GetJobsByGroupAsync(_selectedGroupId);
+        _triggers = await TriggerService.GetTriggersByGroupAsync(_selectedGroupId);
+
+        // Load recent logs
+        _cronJobLogs = await CronJobService.GetRecentLogsAsync(_selectedGroupId, 50);
+        _triggerLogs = await TriggerService.GetRecentLogsAsync(_selectedGroupId, 50);
+
+        _loading = false;
+    }
+
+    private void SwitchTab(string tab)
+    {
+        _activeTab = tab;
+    }
+
+    private void SwitchToCron() => _activeTab = "cron";
+    private void SwitchToTriggers() => _activeTab = "triggers";
+    private void SwitchToLogs() => _activeTab = "logs";
+    private void GoToGroups() => NavigationManager.NavigateTo("/groups");
+
+    private void OpenCreatePanel()
+    {
+        if (_activeTab == "cron")
+        {
+            _editingCronJob = null;
+            _cronForm = new CronJobForm();
+            _selectedDays.Clear();
+            _cronPanelOpen = true;
+        }
+        else if (_activeTab == "triggers")
+        {
+            _editingTrigger = null;
+            _triggerForm = new TriggerForm();
+            _triggerPanelOpen = true;
+        }
+    }
+
+    private void OpenEditCronJob(CronJob job)
+    {
+        _editingCronJob = job;
+        _cronForm = new CronJobForm
+        {
+            Name = job.Name,
+            Description = job.Description ?? "",
+            ScheduleType = job.ScheduleType,
+            CronExpression = job.CronExpression ?? "",
+            IntervalMinutes = job.IntervalMinutes ?? 15,
+            TimeOfDay = job.TimeOfDay ?? "09:00",
+            DayOfMonth = job.DayOfMonth ?? 1,
+            Timezone = job.Timezone,
+            ActionType = job.ActionType,
+            TargetAgentId = job.TargetAgentId?.ToString() ?? "",
+            TargetTeamId = job.TargetTeamId?.ToString() ?? "",
+            MessageTemplate = job.MessageTemplate,
+            SkipIfAgentOffline = job.SkipIfAgentOffline,
+            RetryOnFailure = job.RetryOnFailure
+        };
+
+        // Parse days of week
+        _selectedDays.Clear();
+        if (!string.IsNullOrEmpty(job.DaysOfWeek))
+        {
+            foreach (var day in job.DaysOfWeek.Split(','))
+            {
+                if (int.TryParse(day.Trim(), out var d))
+                    _selectedDays.Add(d);
+            }
+        }
+
+        _cronPanelOpen = true;
+    }
+
+    private void OpenEditTrigger(Trigger trigger)
+    {
+        _editingTrigger = trigger;
+        _triggerForm = new TriggerForm
+        {
+            Name = trigger.Name,
+            Description = trigger.Description ?? "",
+            EventType = trigger.EventType,
+            SourceAgentId = trigger.SourceAgentId?.ToString() ?? "",
+            ActionType = trigger.ActionType,
+            TargetAgentId = trigger.TargetAgentId?.ToString() ?? "",
+            TargetTeamId = trigger.TargetTeamId?.ToString() ?? "",
+            MessageTemplate = trigger.MessageTemplate,
+            DelaySeconds = trigger.DelaySeconds,
+            CooldownSeconds = trigger.CooldownSeconds
+        };
+        _triggerPanelOpen = true;
+    }
+
+    private void ClosePanel()
+    {
+        _cronPanelOpen = false;
+        _triggerPanelOpen = false;
+        _editingCronJob = null;
+        _editingTrigger = null;
+    }
+
+    private async Task SaveCronJob()
+    {
+        if (string.IsNullOrWhiteSpace(_cronForm.Name)) return;
+
+        _saving = true;
+
+        try
+        {
+            if (_editingCronJob != null)
+            {
+                await CronJobService.UpdateJobAsync(_editingCronJob.Id, job =>
+                {
+                    ApplyCronForm(job);
+                });
+            }
+            else
+            {
+                var job = new CronJob { GroupId = _selectedGroupId };
+                ApplyCronForm(job);
+                await CronJobService.CreateJobAsync(job);
+            }
+
+            await LoadData();
+            ClosePanel();
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private void ApplyCronForm(CronJob job)
+    {
+        job.Name = _cronForm.Name;
+        job.Description = string.IsNullOrWhiteSpace(_cronForm.Description) ? null : _cronForm.Description;
+        job.ScheduleType = _cronForm.ScheduleType;
+        job.ActionType = _cronForm.ActionType;
+        job.MessageTemplate = _cronForm.MessageTemplate;
+        job.SkipIfAgentOffline = _cronForm.SkipIfAgentOffline;
+        job.RetryOnFailure = _cronForm.RetryOnFailure;
+        job.Timezone = _cronForm.Timezone;
+
+        // Schedule-specific fields
+        job.CronExpression = _cronForm.ScheduleType == ScheduleType.Cron ? _cronForm.CronExpression : null;
+        job.IntervalMinutes = _cronForm.ScheduleType == ScheduleType.Interval ? _cronForm.IntervalMinutes : null;
+        job.TimeOfDay = _cronForm.ScheduleType == ScheduleType.Daily ||
+                        _cronForm.ScheduleType == ScheduleType.Weekly ||
+                        _cronForm.ScheduleType == ScheduleType.Monthly
+            ? _cronForm.TimeOfDay : null;
+        job.DaysOfWeek = _cronForm.ScheduleType == ScheduleType.Weekly && _selectedDays.Count > 0
+            ? string.Join(",", _selectedDays.OrderBy(d => d)) : null;
+        job.DayOfMonth = _cronForm.ScheduleType == ScheduleType.Monthly ? _cronForm.DayOfMonth : null;
+
+        if (_cronForm.ScheduleType == ScheduleType.OneTime && _cronForm.OneTimeDate.HasValue)
+        {
+            // Convert from local time input to UTC using the selected timezone
+            try
+            {
+                var tz = TimeZoneInfo.FindSystemTimeZoneById(_cronForm.Timezone);
+                job.NextRunAt = TimeZoneInfo.ConvertTimeToUtc(_cronForm.OneTimeDate.Value, tz);
+            }
+            catch
+            {
+                job.NextRunAt = _cronForm.OneTimeDate.Value.ToUniversalTime();
+            }
+        }
+
+        // Target fields
+        job.TargetAgentId = int.TryParse(_cronForm.TargetAgentId, out var agentId) ? agentId : null;
+        job.TargetTeamId = int.TryParse(_cronForm.TargetTeamId, out var teamId) ? teamId : null;
+    }
+
+    private async Task DeleteCronJob()
+    {
+        if (_editingCronJob == null) return;
+
+        await CronJobService.DeleteJobAsync(_editingCronJob.Id);
+        await LoadData();
+        ClosePanel();
+    }
+
+    private async Task ToggleCronJob(CronJob job)
+    {
+        await CronJobService.ToggleJobAsync(job.Id, !job.Enabled);
+        job.Enabled = !job.Enabled;
+    }
+
+    private async Task SaveTrigger()
+    {
+        if (string.IsNullOrWhiteSpace(_triggerForm.Name)) return;
+
+        _saving = true;
+
+        try
+        {
+            if (_editingTrigger != null)
+            {
+                await TriggerService.UpdateTriggerAsync(_editingTrigger.Id, trigger =>
+                {
+                    ApplyTriggerForm(trigger);
+                });
+            }
+            else
+            {
+                var trigger = new Trigger { GroupId = _selectedGroupId };
+                ApplyTriggerForm(trigger);
+                await TriggerService.CreateTriggerAsync(trigger);
+            }
+
+            await LoadData();
+            ClosePanel();
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private void ApplyTriggerForm(Trigger trigger)
+    {
+        trigger.Name = _triggerForm.Name;
+        trigger.Description = string.IsNullOrWhiteSpace(_triggerForm.Description) ? null : _triggerForm.Description;
+        trigger.EventType = _triggerForm.EventType;
+        trigger.ActionType = _triggerForm.ActionType;
+        trigger.MessageTemplate = _triggerForm.MessageTemplate;
+        trigger.DelaySeconds = _triggerForm.DelaySeconds;
+        trigger.CooldownSeconds = _triggerForm.CooldownSeconds;
+        trigger.SourceAgentId = int.TryParse(_triggerForm.SourceAgentId, out var sourceAgentId) ? sourceAgentId : null;
+        trigger.TargetAgentId = int.TryParse(_triggerForm.TargetAgentId, out var targetAgentId) ? targetAgentId : null;
+        trigger.TargetTeamId = int.TryParse(_triggerForm.TargetTeamId, out var targetTeamId) ? targetTeamId : null;
+    }
+
+    private async Task DeleteTrigger()
+    {
+        if (_editingTrigger == null) return;
+
+        await TriggerService.DeleteTriggerAsync(_editingTrigger.Id);
+        await LoadData();
+        ClosePanel();
+    }
+
+    private async Task ToggleTrigger(Trigger trigger)
+    {
+        await TriggerService.ToggleTriggerAsync(trigger.Id, !trigger.Enabled);
+        trigger.Enabled = !trigger.Enabled;
+    }
+
+    private bool IsDaySelected(int day) => _selectedDays.Contains(day);
+
+    private void ToggleDay(int day)
+    {
+        if (_selectedDays.Contains(day))
+            _selectedDays.Remove(day);
+        else
+            _selectedDays.Add(day);
+    }
+
+    private string GetScheduleTypeName(ScheduleType type) => type switch
+    {
+        ScheduleType.Cron => "Cron",
+        ScheduleType.Interval => "Interval",
+        ScheduleType.Daily => "Daily",
+        ScheduleType.Weekly => "Weekly",
+        ScheduleType.Monthly => "Monthly",
+        ScheduleType.OneTime => "One-Time",
+        _ => type.ToString()
+    };
+
+    private string GetActionTarget(CronJob job)
+    {
+        if (job.TargetAgent != null) return $"Agent: {job.TargetAgent.Name}";
+        if (job.TargetTeam != null) return $"Team: {job.TargetTeam.Name}";
+        return job.ActionType.ToString();
+    }
+
+    private string GetTriggerTarget(Trigger trigger)
+    {
+        if (trigger.TargetAgent != null) return $"Agent: {trigger.TargetAgent.Name}";
+        if (trigger.TargetTeam != null) return $"Team: {trigger.TargetTeam.Name}";
+        return trigger.ActionType.ToString();
+    }
+
+    private string GetRelativeTime(DateTime utcTime)
+    {
+        var diff = DateTime.UtcNow - utcTime;
+        if (diff.TotalMinutes < 1) return "just now";
+        if (diff.TotalMinutes < 60) return $"{(int)diff.TotalMinutes}m ago";
+        if (diff.TotalHours < 24) return $"{(int)diff.TotalHours}h ago";
+        return $"{(int)diff.TotalDays}d ago";
+    }
+
+    private IEnumerable<LogEntry> GetCombinedLogs()
+    {
+        var cronLogs = _cronJobLogs.Select(l => new LogEntry
+        {
+            IsCronJob = true,
+            ExecutedAt = l.StartedAt,
+            Name = l.CronJob?.Name ?? "Unknown",
+            Target = l.Target ?? "-",
+            Status = l.Status,
+            DurationMs = l.DurationMs
+        });
+
+        var triggerLogs = _triggerLogs.Select(l => new LogEntry
+        {
+            IsCronJob = false,
+            ExecutedAt = l.ExecutedAt,
+            Name = l.Trigger?.Name ?? "Unknown",
+            Target = l.Target ?? "-",
+            Status = l.Status,
+            DurationMs = null
+        });
+
+        return cronLogs.Concat(triggerLogs).OrderByDescending(l => l.ExecutedAt).Take(100);
+    }
+
+    // Form models
+    private class CronJobForm
+    {
+        public string Name { get; set; } = "";
+        public string Description { get; set; } = "";
+        public ScheduleType ScheduleType { get; set; } = ScheduleType.Daily;
+        public string CronExpression { get; set; } = "";
+        public int IntervalMinutes { get; set; } = 15;
+        public string TimeOfDay { get; set; } = "09:00";
+        public int DayOfMonth { get; set; } = 1;
+        public DateTime? OneTimeDate { get; set; }
+        public string Timezone { get; set; } = TimeZoneInfo.Local.Id;
+        public JobActionType ActionType { get; set; } = JobActionType.PromptAgent;
+        public string TargetAgentId { get; set; } = "";
+        public string TargetTeamId { get; set; } = "";
+        public string MessageTemplate { get; set; } = "";
+        public bool SkipIfAgentOffline { get; set; } = false;
+        public bool RetryOnFailure { get; set; } = false;
+    }
+
+    private class TriggerForm
+    {
+        public string Name { get; set; } = "";
+        public string Description { get; set; } = "";
+        public TriggerEventType EventType { get; set; } = TriggerEventType.AgentOnline;
+        public string SourceAgentId { get; set; } = "";
+        public JobActionType ActionType { get; set; } = JobActionType.PromptAgent;
+        public string TargetAgentId { get; set; } = "";
+        public string TargetTeamId { get; set; } = "";
+        public string MessageTemplate { get; set; } = "";
+        public int DelaySeconds { get; set; } = 0;
+        public int CooldownSeconds { get; set; } = 0;
+    }
+
+    private class LogEntry
+    {
+        public bool IsCronJob { get; set; }
+        public DateTime ExecutedAt { get; set; }
+        public string Name { get; set; } = "";
+        public string Target { get; set; } = "";
+        public JobExecutionStatus Status { get; set; }
+        public long? DurationMs { get; set; }
+    }
+
+    /// <summary>
+    /// Format a UTC datetime using the job's timezone
+    /// </summary>
+    private string FormatInJobTimezone(DateTime utcTime, string timezone)
+    {
+        try
+        {
+            var tz = TimeZoneInfo.FindSystemTimeZoneById(timezone);
+            var localTime = TimeZoneInfo.ConvertTimeFromUtc(utcTime, tz);
+            return localTime.ToString("MMM d, HH:mm");
+        }
+        catch
+        {
+            // Fallback to local time if timezone is invalid
+            return utcTime.ToLocalTime().ToString("MMM d, HH:mm");
+        }
+    }
+
+    /// <summary>
+    /// Format a UTC datetime to local time for logs
+    /// </summary>
+    private string FormatUtcToLocal(DateTime utcTime)
+    {
+        return utcTime.ToLocalTime().ToString("MMM d, HH:mm:ss");
+    }
+}

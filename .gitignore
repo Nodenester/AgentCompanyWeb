@@ -1,0 +1,33 @@
+# Build outputs
+bin/
+obj/
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# IDE
+.vs/
+.idea/
+*.user
+*.suo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment / secrets
+.env
+appsettings.*.json
+!appsettings.json
+!appsettings.Development.json
+
+# Claude Code project files
+.claude/
+
+# Misc
+nul

@@ -1,0 +1,431 @@
+@using AgentCompanyWeb.Data
+@using AgentCompanyWeb.Data.Models
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Nav
+
+<div class="swarm-minimap">
+    <div class="minimap-header">
+        <h3 class="minimap-title">Swarm Map</h3>
+        <button class="minimap-expand" @onclick="NavigateToAgents" title="Expand to full view">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="15 3 21 3 21 9"></polyline>
+                <polyline points="9 21 3 21 3 15"></polyline>
+                <line x1="21" y1="3" x2="14" y2="10"></line>
+                <line x1="3" y1="21" x2="10" y2="14"></line>
+            </svg>
+        </button>
+    </div>
+    <div class="minimap-content">
+        <svg class="minimap-svg" viewBox="0 0 300 200">
+            @* Connection lines first (behind nodes) *@
+            @foreach (var conn in _connections)
+            {
+                <line x1="@F(conn.X1)" y1="@F(conn.Y1)" x2="@F(conn.X2)" y2="@F(conn.Y2)"
+                      stroke="#E0E0E0" stroke-width="2" />
+            }
+
+            @* Render all nodes *@
+            @foreach (var node in _nodes)
+            {
+                var fillColor = node.IsTeam ? "#0071E3" : node.Status switch
+                {
+                    AgentStatus.Working => "#FF9F0A",
+                    AgentStatus.Online => "#34C759",
+                    AgentStatus.Error => "#FF3B30",
+                    _ => "#8E8E93"
+                };
+
+                var glowColor = node.IsTeam ? "rgba(0,113,227,0.3)" : node.Status switch
+                {
+                    AgentStatus.Working => "rgba(255,159,10,0.3)",
+                    AgentStatus.Online => "rgba(52,199,89,0.3)",
+                    AgentStatus.Error => "rgba(255,59,48,0.3)",
+                    _ => "rgba(142,142,147,0.2)"
+                };
+
+                @* Glow/shadow circle *@
+                <circle cx="@F(node.X)" cy="@F(node.Y)" r="@F(node.Radius + 6)"
+                        fill="@glowColor" class="node-glow" />
+
+                @* Pulse for working *@
+                @if (node.Status == AgentStatus.Working && !node.IsTeam)
+                {
+                    <circle cx="@F(node.X)" cy="@F(node.Y)" r="@F(node.Radius)"
+                            fill="none" stroke="@fillColor" stroke-width="2" class="pulse-ring">
+                        <animate attributeName="r" values="@F(node.Radius);@F(node.Radius + 15);@F(node.Radius)"
+                                 dur="2s" repeatCount="indefinite" />
+                        <animate attributeName="opacity" values="0.8;0;0.8" dur="2s" repeatCount="indefinite" />
+                    </circle>
+                }
+
+                @* Main circle *@
+                <circle cx="@F(node.X)" cy="@F(node.Y)" r="@F(node.Radius)"
+                        fill="@fillColor" class="node-circle" style="cursor:pointer"
+                        @onclick="() => OnNodeClick(node)" />
+
+                @* Inner highlight *@
+                <circle cx="@F(node.X - node.Radius * 0.2)" cy="@F(node.Y - node.Radius * 0.2)"
+                        r="@F(node.Radius * 0.35)" fill="rgba(255,255,255,0.4)" style="pointer-events:none" />
+
+                @* Label *@
+                @((MarkupString)$"<text x=\"{F(node.X)}\" y=\"{F(node.Y + 4)}\" text-anchor=\"middle\" fill=\"white\" font-size=\"{(node.IsTeam ? 11 : 10)}\" font-weight=\"600\" style=\"pointer-events:none\">{node.Label}</text>")
+            }
+        </svg>
+
+        @if (_nodes.Count == 0)
+        {
+            <div class="minimap-empty">
+                <span>No agents yet</span>
+            </div>
+        }
+    </div>
+    <div class="minimap-legend">
+        <div class="legend-item">
+            <span class="legend-dot" style="background:#34C759"></span>
+            <span>Online</span>
+        </div>
+        <div class="legend-item">
+            <span class="legend-dot" style="background:#FF9F0A"></span>
+            <span>Working</span>
+        </div>
+        <div class="legend-item">
+            <span class="legend-dot" style="background:#8E8E93"></span>
+            <span>Offline</span>
+        </div>
+    </div>
+</div>
+
+<style>
+    .swarm-minimap {
+        background: var(--bg-card);
+        border-radius: var(--radius-lg);
+        border: 1px solid var(--border-light);
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+    }
+
+    .minimap-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border-light);
+    }
+
+    .minimap-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin: 0;
+    }
+
+    .minimap-expand {
+        background: none;
+        border: none;
+        padding: 4px;
+        cursor: pointer;
+        color: var(--text-tertiary);
+        border-radius: var(--radius-sm);
+        transition: all 0.15s ease;
+    }
+
+    .minimap-expand:hover {
+        background: var(--bg-hover);
+        color: var(--accent);
+    }
+
+    .minimap-content {
+        position: relative;
+        flex: 1;
+        min-height: 180px;
+        padding: 8px;
+        background: linear-gradient(180deg, #f8f9fa 0%, #f0f2f5 100%);
+    }
+
+    .minimap-svg {
+        width: 100%;
+        height: 100%;
+        display: block;
+    }
+
+    .node-circle {
+        transition: transform 0.15s ease, filter 0.15s ease;
+    }
+
+    .node-circle:hover {
+        filter: brightness(1.15);
+    }
+
+    .minimap-empty {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--text-tertiary);
+        font-size: 12px;
+    }
+
+    .minimap-legend {
+        display: flex;
+        gap: 16px;
+        padding: 10px 16px;
+        border-top: 1px solid var(--border-light);
+        background: var(--bg-secondary);
+    }
+
+    .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: var(--text-secondary);
+    }
+
+    .legend-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+    }
+</style>
+
+@code {
+    private List<NetworkNode> _nodes = new();
+    private List<ConnectionLine> _connections = new();
+
+    private const double ViewWidth = 300;
+    private const double ViewHeight = 200;
+    private const double CenterX = 150;
+    private const double CenterY = 100;
+
+    // Helper to format doubles for SVG
+    private string F(double val) => val.ToString("F1", System.Globalization.CultureInfo.InvariantCulture);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+    }
+
+    private async Task LoadData()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        var agents = await db.Agents.Include(a => a.TeamMemberships).ToListAsync();
+        var teams = await db.Teams.Include(t => t.Members).ToListAsync();
+
+        BuildNetworkGraph(agents, teams);
+    }
+
+    private void BuildNetworkGraph(List<Agent> agents, List<Team> teams)
+    {
+        _nodes.Clear();
+        _connections.Clear();
+
+        if (agents.Count == 0 && teams.Count == 0) return;
+
+        // Create team nodes (larger)
+        foreach (var team in teams)
+        {
+            _nodes.Add(new NetworkNode
+            {
+                Id = $"team-{team.Id}",
+                Label = team.Name.Length > 5 ? team.Name[..5] : team.Name,
+                IsTeam = true,
+                TeamId = team.Id,
+                Radius = 24,
+                Status = AgentStatus.Online
+            });
+        }
+
+        // Create agent nodes
+        foreach (var agent in agents)
+        {
+            _nodes.Add(new NetworkNode
+            {
+                Id = $"agent-{agent.Id}",
+                Label = GetInitials(agent.Name),
+                IsTeam = false,
+                AgentId = agent.Id,
+                Radius = 18,
+                Status = agent.Status,
+                TeamIds = agent.TeamMemberships.Select(m => m.TeamId).ToList()
+            });
+        }
+
+        PositionNodes(teams.Count > 0);
+        BuildConnections();
+    }
+
+    private void PositionNodes(bool hasTeams)
+    {
+        if (_nodes.Count == 0) return;
+
+        var teamNodes = _nodes.Where(n => n.IsTeam).ToList();
+        var agentNodes = _nodes.Where(n => !n.IsTeam).ToList();
+
+        if (_nodes.Count == 1)
+        {
+            _nodes[0].X = CenterX;
+            _nodes[0].Y = CenterY;
+            return;
+        }
+
+        if (hasTeams && teamNodes.Count > 0)
+        {
+            // Place teams near top-center
+            PlaceInArc(teamNodes, CenterX, 55, 60, -Math.PI * 0.8, Math.PI * 0.8);
+
+            // Place agents below, grouped by team
+            var positioned = new HashSet<string>();
+
+            foreach (var teamNode in teamNodes)
+            {
+                var members = agentNodes.Where(a => a.TeamIds.Contains(teamNode.TeamId)).ToList();
+                if (members.Count > 0)
+                {
+                    var startAngle = Math.PI * 0.3;
+                    var angleSpread = Math.PI * 0.4;
+
+                    for (int i = 0; i < members.Count; i++)
+                    {
+                        var angle = startAngle + (members.Count > 1 ? angleSpread * i / (members.Count - 1) : angleSpread / 2);
+                        members[i].X = teamNode.X + 50 * Math.Cos(angle);
+                        members[i].Y = teamNode.Y + 50 * Math.Sin(angle);
+                        positioned.Add(members[i].Id);
+                    }
+                }
+            }
+
+            // Unaffiliated agents at bottom
+            var unaffiliated = agentNodes.Where(a => !positioned.Contains(a.Id)).ToList();
+            if (unaffiliated.Count > 0)
+            {
+                PlaceInArc(unaffiliated, CenterX, 160, 70, Math.PI * 0.2, Math.PI * 0.8);
+            }
+        }
+        else
+        {
+            // No teams - arrange agents in a circle
+            PlaceInCircle(agentNodes, CenterX, CenterY, Math.Min(60, 20 + agentNodes.Count * 8));
+        }
+
+        // Keep within bounds
+        foreach (var node in _nodes)
+        {
+            node.X = Math.Clamp(node.X, node.Radius + 5, ViewWidth - node.Radius - 5);
+            node.Y = Math.Clamp(node.Y, node.Radius + 5, ViewHeight - node.Radius - 5);
+        }
+    }
+
+    private void PlaceInCircle(List<NetworkNode> nodes, double cx, double cy, double radius)
+    {
+        for (int i = 0; i < nodes.Count; i++)
+        {
+            var angle = -Math.PI / 2 + (2 * Math.PI * i / nodes.Count);
+            nodes[i].X = cx + radius * Math.Cos(angle);
+            nodes[i].Y = cy + radius * Math.Sin(angle);
+        }
+    }
+
+    private void PlaceInArc(List<NetworkNode> nodes, double cx, double cy, double radius, double startAngle, double endAngle)
+    {
+        if (nodes.Count == 1)
+        {
+            nodes[0].X = cx;
+            nodes[0].Y = cy;
+            return;
+        }
+
+        for (int i = 0; i < nodes.Count; i++)
+        {
+            var t = (double)i / (nodes.Count - 1);
+            var angle = startAngle + t * (endAngle - startAngle);
+            nodes[i].X = cx + radius * Math.Cos(angle);
+            nodes[i].Y = cy + radius * Math.Sin(angle);
+        }
+    }
+
+    private void BuildConnections()
+    {
+        // Connect agents to their teams
+        foreach (var agent in _nodes.Where(n => !n.IsTeam))
+        {
+            foreach (var teamId in agent.TeamIds)
+            {
+                var team = _nodes.FirstOrDefault(n => n.IsTeam && n.TeamId == teamId);
+                if (team != null)
+                {
+                    _connections.Add(new ConnectionLine
+                    {
+                        X1 = team.X, Y1 = team.Y,
+                        X2 = agent.X, Y2 = agent.Y
+                    });
+                }
+            }
+        }
+
+        // If no teams, connect agents that share team membership
+        if (!_nodes.Any(n => n.IsTeam))
+        {
+            var agents = _nodes.ToList();
+            for (int i = 0; i < agents.Count; i++)
+            {
+                for (int j = i + 1; j < agents.Count; j++)
+                {
+                    if (agents[i].TeamIds.Intersect(agents[j].TeamIds).Any())
+                    {
+                        _connections.Add(new ConnectionLine
+                        {
+                            X1 = agents[i].X, Y1 = agents[i].Y,
+                            X2 = agents[j].X, Y2 = agents[j].Y
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    private string GetInitials(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return "?";
+        var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length >= 2)
+            return $"{parts[0][0]}{parts[1][0]}".ToUpper();
+        return name.Length >= 2 ? name[..2].ToUpper() : name.ToUpper();
+    }
+
+    private void OnNodeClick(NetworkNode node)
+    {
+        if (node.IsTeam)
+            Nav.NavigateTo("/agents");
+        else if (node.AgentId.HasValue)
+            Nav.NavigateTo($"/agent/{node.AgentId}");
+    }
+
+    private void NavigateToAgents() => Nav.NavigateTo("/agents");
+
+    private class NetworkNode
+    {
+        public string Id { get; set; } = "";
+        public string Label { get; set; } = "";
+        public bool IsTeam { get; set; }
+        public int? AgentId { get; set; }
+        public int TeamId { get; set; }
+        public List<int> TeamIds { get; set; } = new();
+        public double X { get; set; }
+        public double Y { get; set; }
+        public double Radius { get; set; }
+        public AgentStatus Status { get; set; }
+    }
+
+    private class ConnectionLine
+    {
+        public double X1 { get; set; }
+        public double Y1 { get; set; }
+        public double X2 { get; set; }
+        public double Y2 { get; set; }
+    }
+}

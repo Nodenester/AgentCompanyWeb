@@ -1,0 +1,251 @@
+@using AgentCompanyWeb.Data
+@using AgentCompanyWeb.Data.Models
+@using Microsoft.EntityFrameworkCore
+@using Microsoft.AspNetCore.SignalR.Client
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Nav
+@implements IAsyncDisposable
+
+<div class="status-strip">
+    <div class="status-strip-left">
+        <div class="status-chip status-chip-online" title="Online agents">
+            <span class="status-chip-dot online"></span>
+            <span class="status-chip-count">@_onlineCount</span>
+            <span class="status-chip-label">Online</span>
+        </div>
+        <div class="status-chip status-chip-working" title="Working agents">
+            <span class="status-chip-dot working"></span>
+            <span class="status-chip-count">@_workingCount</span>
+            <span class="status-chip-label">Working</span>
+        </div>
+        <div class="status-chip status-chip-idle" title="Idle agents">
+            <span class="status-chip-dot idle"></span>
+            <span class="status-chip-count">@_idleCount</span>
+            <span class="status-chip-label">Idle</span>
+        </div>
+        @if (_errorCount > 0)
+        {
+            <div class="status-chip status-chip-error" title="Agents with errors">
+                <span class="status-chip-dot error"></span>
+                <span class="status-chip-count">@_errorCount</span>
+                <span class="status-chip-label">Error</span>
+            </div>
+        }
+    </div>
+    <div class="status-strip-right">
+        <div class="connection-status @(_isConnected ? "connected" : "disconnected")">
+            <span class="connection-dot"></span>
+            <span class="connection-label">@(_isConnected ? "Connected" : "Disconnected")</span>
+        </div>
+        <div class="last-update" title="Last updated">
+            @_lastUpdate.ToString("HH:mm:ss")
+        </div>
+    </div>
+</div>
+
+<style>
+    .status-strip {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 24px;
+        background: var(--bg-card);
+        border-bottom: 1px solid var(--border-light);
+        flex-shrink: 0;
+    }
+
+    .status-strip-left {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+    }
+
+    .status-strip-right {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+    }
+
+    .status-chip {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        background: var(--bg-hover);
+        border-radius: var(--radius-full);
+        cursor: default;
+        transition: all 0.15s ease;
+    }
+
+    .status-chip:hover {
+        background: var(--bg-active);
+    }
+
+    .status-chip-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+    }
+
+    .status-chip-dot.online {
+        background: var(--success);
+        box-shadow: 0 0 0 2px rgba(52, 199, 89, 0.2);
+    }
+
+    .status-chip-dot.working {
+        background: var(--warning);
+        box-shadow: 0 0 0 2px rgba(255, 159, 10, 0.2);
+        animation: pulse 2s ease-in-out infinite;
+    }
+
+    .status-chip-dot.idle {
+        background: var(--text-tertiary);
+    }
+
+    .status-chip-dot.error {
+        background: var(--danger);
+        box-shadow: 0 0 0 2px rgba(255, 59, 48, 0.2);
+    }
+
+    .status-chip-count {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text-primary);
+    }
+
+    .status-chip-label {
+        font-size: 12px;
+        color: var(--text-secondary);
+    }
+
+    .status-chip-error {
+        background: rgba(255, 59, 48, 0.1);
+    }
+
+    .connection-status {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        font-weight: 500;
+    }
+
+    .connection-status.connected {
+        color: var(--success);
+    }
+
+    .connection-status.disconnected {
+        color: var(--danger);
+    }
+
+    .connection-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+    }
+
+    .connection-status.connected .connection-dot {
+        animation: connectionPulse 2s ease-in-out infinite;
+    }
+
+    @@keyframes connectionPulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+    }
+
+    .last-update {
+        font-size: 11px;
+        color: var(--text-tertiary);
+        font-family: 'SF Mono', 'Consolas', monospace;
+    }
+
+    @@keyframes pulse {
+        0%, 100% { transform: scale(1); opacity: 1; }
+        50% { transform: scale(1.1); opacity: 0.8; }
+    }
+</style>
+
+@code {
+    private int _onlineCount = 0;
+    private int _workingCount = 0;
+    private int _idleCount = 0;
+    private int _errorCount = 0;
+    private bool _isConnected = false;
+    private DateTime _lastUpdate = DateTime.Now;
+    private HubConnection? _hubConnection;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadCounts();
+        await ConnectToSignalR();
+    }
+
+    private async Task LoadCounts()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        _workingCount = await db.Agents.CountAsync(a => a.Status == AgentStatus.Working);
+        _onlineCount = await db.Agents.CountAsync(a => a.Status == AgentStatus.Online);
+        _idleCount = _onlineCount; // Online but not working = idle
+        _onlineCount += _workingCount; // Total online includes working
+        _errorCount = await db.Agents.CountAsync(a => a.Status == AgentStatus.Error);
+        _lastUpdate = DateTime.Now;
+    }
+
+    private async Task ConnectToSignalR()
+    {
+        try
+        {
+            _hubConnection = new HubConnectionBuilder()
+                .WithUrl(Nav.ToAbsoluteUri("/hubs/agentnetwork"))
+                .WithAutomaticReconnect()
+                .Build();
+
+            _hubConnection.On<dynamic>("AgentStatusChanged", async (status) =>
+            {
+                await InvokeAsync(async () =>
+                {
+                    await LoadCounts();
+                    StateHasChanged();
+                });
+            });
+
+            _hubConnection.Reconnecting += error =>
+            {
+                _isConnected = false;
+                InvokeAsync(StateHasChanged);
+                return Task.CompletedTask;
+            };
+
+            _hubConnection.Reconnected += connectionId =>
+            {
+                _isConnected = true;
+                InvokeAsync(StateHasChanged);
+                return Task.CompletedTask;
+            };
+
+            _hubConnection.Closed += error =>
+            {
+                _isConnected = false;
+                InvokeAsync(StateHasChanged);
+                return Task.CompletedTask;
+            };
+
+            await _hubConnection.StartAsync();
+            _isConnected = true;
+        }
+        catch
+        {
+            _isConnected = false;
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_hubConnection != null)
+        {
+            await _hubConnection.DisposeAsync();
+        }
+    }
+}

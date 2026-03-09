@@ -1,0 +1,197 @@
+@using AgentCompanyWeb.Data.Models
+
+<div class="timeline-item timeline-item-@Type.ToString().ToLower()">
+    <div class="timeline-icon">
+        @switch (Type)
+        {
+            case ActivityType.TaskStarted:
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                </svg>
+                break;
+            case ActivityType.TaskCompleted:
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+                break;
+            case ActivityType.TaskFailed:
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+                break;
+            case ActivityType.Message:
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                </svg>
+                break;
+            case ActivityType.StatusChange:
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <circle cx="12" cy="12" r="3"></circle>
+                </svg>
+                break;
+            case ActivityType.Error:
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <line x1="12" y1="8" x2="12" y2="12"></line>
+                    <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                </svg>
+                break;
+            case ActivityType.Trigger:
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                </svg>
+                break;
+            default:
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"></circle>
+                </svg>
+                break;
+        }
+    </div>
+    <span class="timeline-time">@GetRelativeTime(Timestamp)</span>
+    @if (!string.IsNullOrEmpty(AgentName))
+    {
+        <span class="timeline-agent" @onclick="OnAgentClick" @onclick:stopPropagation="true">@AgentName</span>
+    }
+    <span class="timeline-description">@Description</span>
+    @if (!string.IsNullOrEmpty(Detail))
+    {
+        <span class="timeline-detail" title="@Detail">@Detail</span>
+    }
+</div>
+
+<style>
+    .timeline-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--border-light);
+        cursor: pointer;
+        transition: background 0.15s ease;
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    .timeline-item:hover {
+        background: var(--bg-hover);
+    }
+
+    .timeline-item:last-child {
+        border-bottom: none;
+    }
+
+    .timeline-icon {
+        flex-shrink: 0;
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--bg-hover);
+        color: var(--text-secondary);
+    }
+
+    .timeline-item-taskstarted .timeline-icon {
+        background: rgba(0, 113, 227, 0.1);
+        color: var(--accent);
+    }
+
+    .timeline-item-taskcompleted .timeline-icon {
+        background: rgba(52, 199, 89, 0.1);
+        color: var(--success);
+    }
+
+    .timeline-item-taskfailed .timeline-icon,
+    .timeline-item-error .timeline-icon {
+        background: rgba(255, 59, 48, 0.1);
+        color: var(--danger);
+    }
+
+    .timeline-item-message .timeline-icon {
+        background: rgba(88, 86, 214, 0.1);
+        color: #5856D6;
+    }
+
+    .timeline-item-statuschange .timeline-icon {
+        background: rgba(255, 159, 10, 0.1);
+        color: var(--warning);
+    }
+
+    .timeline-item-trigger .timeline-icon {
+        background: rgba(255, 45, 85, 0.1);
+        color: #FF2D55;
+    }
+
+    .timeline-time {
+        flex-shrink: 0;
+        font-size: 11px;
+        color: var(--text-tertiary);
+        font-family: 'SF Mono', 'Consolas', monospace;
+        min-width: 50px;
+    }
+
+    .timeline-agent {
+        flex-shrink: 0;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--accent);
+        cursor: pointer;
+    }
+
+    .timeline-agent:hover {
+        text-decoration: underline;
+    }
+
+    .timeline-description {
+        flex: 1;
+        font-size: 13px;
+        color: var(--text-primary);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .timeline-detail {
+        flex-shrink: 0;
+        font-size: 11px;
+        color: var(--text-secondary);
+        padding: 3px 8px;
+        background: var(--bg-hover);
+        border-radius: var(--radius-sm);
+        font-family: 'SF Mono', 'Consolas', monospace;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 150px;
+    }
+</style>
+
+@code {
+    [Parameter] public ActivityType Type { get; set; }
+    [Parameter] public DateTime Timestamp { get; set; }
+    [Parameter] public string? AgentName { get; set; }
+    [Parameter] public string Description { get; set; } = "";
+    [Parameter] public string? Detail { get; set; }
+    [Parameter] public EventCallback OnClick { get; set; }
+    [Parameter] public EventCallback OnAgentClick { get; set; }
+
+    private string GetRelativeTime(DateTime timestamp)
+    {
+        var diff = DateTime.Now - timestamp;
+
+        if (diff.TotalSeconds < 30)
+            return "Just now";
+        if (diff.TotalMinutes < 1)
+            return $"{(int)diff.TotalSeconds}s ago";
+        if (diff.TotalMinutes < 60)
+            return $"{(int)diff.TotalMinutes}m ago";
+        if (diff.TotalHours < 24)
+            return $"{(int)diff.TotalHours}h ago";
+
+        return timestamp.ToString("MMM d, HH:mm");
+    }
+}

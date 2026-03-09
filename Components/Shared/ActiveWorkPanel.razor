@@ -1,0 +1,218 @@
+@using AgentCompanyWeb.Data
+@using AgentCompanyWeb.Data.Models
+@using Microsoft.EntityFrameworkCore
+@using Microsoft.AspNetCore.SignalR.Client
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Nav
+@implements IAsyncDisposable
+
+<div class="active-work-panel">
+    <div class="panel-header">
+        <h3 class="panel-title">Active Work</h3>
+        @if (_workingAgents.Count > 3)
+        {
+            <span class="panel-count">+@(_workingAgents.Count - 3) more</span>
+        }
+    </div>
+    <div class="panel-content">
+        @if (_workingAgents.Count == 0)
+        {
+            <div class="panel-empty">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <path d="M8 12h8"></path>
+                </svg>
+                <span>No active tasks</span>
+            </div>
+        }
+        else
+        {
+            @foreach (var agent in _workingAgents.Take(3))
+            {
+                <div class="work-item" @onclick="() => NavigateToAgent(agent.Id)">
+                    <div class="work-item-header">
+                        <span class="work-dot"></span>
+                        <span class="work-agent">@agent.Name</span>
+                    </div>
+                    <div class="work-task" title="@agent.CurrentTask">
+                        @(TruncateTask(agent.CurrentTask ?? "Working..."))
+                    </div>
+                    <div class="work-time">
+                        @GetWorkingTime(agent.LastActivityAt)
+                    </div>
+                </div>
+            }
+        }
+    </div>
+</div>
+
+<style>
+    .active-work-panel {
+        background: var(--bg-card);
+        border-radius: var(--radius-lg);
+        border: 1px solid var(--border-light);
+        overflow: hidden;
+    }
+
+    .panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border-light);
+    }
+
+    .panel-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin: 0;
+    }
+
+    .panel-count {
+        font-size: 11px;
+        color: var(--text-tertiary);
+    }
+
+    .panel-content {
+        padding: 8px;
+    }
+
+    .panel-empty {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 24px;
+        color: var(--text-tertiary);
+    }
+
+    .panel-empty svg {
+        opacity: 0.4;
+    }
+
+    .panel-empty span {
+        font-size: 12px;
+    }
+
+    .work-item {
+        padding: 10px 12px;
+        border-radius: var(--radius-md);
+        cursor: pointer;
+        transition: background 0.15s ease;
+    }
+
+    .work-item:hover {
+        background: var(--bg-hover);
+    }
+
+    .work-item-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 4px;
+    }
+
+    .work-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--warning);
+        animation: workPulse 2s ease-in-out infinite;
+    }
+
+    @@keyframes workPulse {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.6; transform: scale(0.9); }
+    }
+
+    .work-agent {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-primary);
+    }
+
+    .work-task {
+        font-size: 12px;
+        color: var(--text-secondary);
+        margin-left: 16px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .work-time {
+        font-size: 10px;
+        color: var(--text-tertiary);
+        margin-left: 16px;
+        margin-top: 4px;
+    }
+</style>
+
+@code {
+    private List<Agent> _workingAgents = new();
+    private HubConnection? _hubConnection;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+        await ConnectToSignalR();
+    }
+
+    private async Task LoadData()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _workingAgents = await db.Agents
+            .Where(a => a.Status == AgentStatus.Working)
+            .OrderByDescending(a => a.LastActivityAt)
+            .ToListAsync();
+    }
+
+    private async Task ConnectToSignalR()
+    {
+        try
+        {
+            _hubConnection = new HubConnectionBuilder()
+                .WithUrl(Nav.ToAbsoluteUri("/hubs/agentnetwork"))
+                .WithAutomaticReconnect()
+                .Build();
+
+            _hubConnection.On<dynamic>("AgentStatusChanged", async (status) =>
+            {
+                await InvokeAsync(async () =>
+                {
+                    await LoadData();
+                    StateHasChanged();
+                });
+            });
+
+            await _hubConnection.StartAsync();
+        }
+        catch { }
+    }
+
+    private string TruncateTask(string task)
+    {
+        if (string.IsNullOrEmpty(task)) return "Working...";
+        return task.Length > 40 ? task[..37] + "..." : task;
+    }
+
+    private string GetWorkingTime(DateTime startTime)
+    {
+        var diff = DateTime.Now - startTime;
+        if (diff.TotalMinutes < 1) return "Just started";
+        if (diff.TotalMinutes < 60) return $"Working for {(int)diff.TotalMinutes}m";
+        return $"Working for {(int)diff.TotalHours}h {diff.Minutes}m";
+    }
+
+    private void NavigateToAgent(int id) => Nav.NavigateTo($"/agent/{id}");
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_hubConnection != null)
+        {
+            await _hubConnection.DisposeAsync();
+        }
+    }
+}

@@ -1,0 +1,869 @@
+@page "/messages"
+@using AgentCompanyWeb.Data
+@using AgentCompanyWeb.Data.Models
+@using AgentCompanyWeb.Services
+@using AgentCompanyEngineer.Services
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject IJSRuntime JS
+@inject NavigationManager Nav
+@inject AgentNetworkService AgentNetwork
+@inject AgentNetworkEvents NetworkEvents
+@implements IDisposable
+@rendermode InteractiveServer
+
+<PageTitle>Messages - Agent Company</PageTitle>
+
+<div class="full-height-page">
+<div class="messages-layout">
+    <!-- Channels Sidebar -->
+    <div class="channels-sidebar">
+        <div class="channels-header">
+            <h3>Channels</h3>
+            <div class="connection-status @(_isConnected ? "connected" : "disconnected")" title="@(_isConnected ? "Connected - Real-time updates active" : "Connecting...")">
+                <span class="status-indicator"></span>
+            </div>
+            <button class="btn btn-ghost btn-icon" @onclick="() => _showNewChannel = true" title="New Channel">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="12" y1="5" x2="12" y2="19"></line>
+                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+            </button>
+        </div>
+
+        <div class="channels-section">
+            <div class="section-label">Teams</div>
+            @foreach (var team in _teams)
+            {
+                <button class="channel-item @(_selectedTeamId == team.Id ? "active" : "")"
+                        @onclick="async () => await SelectTeam(team.Id)">
+                    <span class="channel-icon">#</span>
+                    <span class="channel-name">@team.Name</span>
+                    <span class="channel-badge @GroupColors.GetCssClass(team.Color)"></span>
+                </button>
+            }
+        </div>
+
+        <div class="channels-section">
+            <div class="section-label">Direct Messages</div>
+            @* Show database agents first *@
+            @foreach (var agent in _agents.Where(a => a.Id != _currentAgentId))
+            {
+                var networkStatus = GetNetworkAgentStatus(agent.Name);
+                <button class="channel-item @(_selectedAgentId == agent.Id ? "active" : "")"
+                        @onclick="async () => await SelectAgent(agent.Id)">
+                    <span class="status-dot @GetStatusClass(networkStatus)"></span>
+                    <span class="channel-name">@agent.Name</span>
+                    @if (!string.IsNullOrEmpty(agent.Role))
+                    {
+                        <span class="dm-role">@agent.Role</span>
+                    }
+                </button>
+            }
+            @* Show network agents not in database (excluding server's own identity) *@
+            @foreach (var networkAgent in _networkAgents.Values.Where(na =>
+                !_agents.Any(a => a.Name == na.Name) &&
+                na.Name != "WebUI" &&
+                na.Name != "AgentCompanyWeb" &&
+                na.Name != _currentAgentName))
+            {
+                <button class="channel-item @(_selectedNetworkAgentName == networkAgent.Name ? "active" : "")"
+                        @onclick="async () => await SelectNetworkAgent(networkAgent.Name)">
+                    <span class="status-dot @(networkAgent.Status == "online" ? "status-online" : "status-offline")"></span>
+                    <span class="channel-name">@networkAgent.Name</span>
+                    <span class="dm-role">Network</span>
+                </button>
+            }
+        </div>
+    </div>
+
+    <!-- Messages Area -->
+    <div class="messages-main">
+        @if (_selectedTeamId > 0 || _selectedAgentId > 0 || !string.IsNullOrEmpty(_selectedNetworkAgentName))
+        {
+            <div class="messages-header">
+                @if (_selectedTeamId > 0)
+                {
+                    var team = _teams.FirstOrDefault(t => t.Id == _selectedTeamId);
+                    <span class="channel-icon large">#</span>
+                    <div class="header-info">
+                        <h2>@team?.Name</h2>
+                        <span class="header-meta">@team?.Members.Count members</span>
+                    </div>
+                    <div class="header-spacer"></div>
+                    <button class="btn btn-ghost btn-icon" @onclick="() => _showMembersPanel = !_showMembersPanel"
+                            title="Show members">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                            <circle cx="9" cy="7" r="4"></circle>
+                            <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                        </svg>
+                    </button>
+                }
+                else if (!string.IsNullOrEmpty(_selectedNetworkAgentName))
+                {
+                    var networkStatus = _networkAgents.TryGetValue(_selectedNetworkAgentName, out var na) ? na.Status : "offline";
+                    <span class="status-dot large @(networkStatus == "online" ? "status-online" : "status-offline")"></span>
+                    <div class="header-info">
+                        <h2>@_selectedNetworkAgentName</h2>
+                        <span class="header-meta">Network Agent</span>
+                    </div>
+                }
+                else
+                {
+                    var agent = _agents.FirstOrDefault(a => a.Id == _selectedAgentId);
+                    var networkStatus = GetNetworkAgentStatus(agent?.Name ?? "");
+                    <span class="status-dot large @GetStatusClass(networkStatus)"></span>
+                    <div class="header-info">
+                        <h2>@agent?.Name</h2>
+                        <span class="header-meta">@agent?.Role</span>
+                    </div>
+                }
+            </div>
+
+            <div class="messages-list" @ref="_messagesContainer">
+                @foreach (var msg in _messages)
+                {
+                    <div class="message @(msg.IsOwnMessage ? "own" : "")">
+                        <div class="message-avatar">
+                            <span class="status-dot @GetStatusClass(msg.SenderStatus)"></span>
+                        </div>
+                        <div class="message-content">
+                            <div class="message-header">
+                                <span class="message-sender">@msg.SenderName</span>
+                                <span class="message-time">@msg.Timestamp.ToString("HH:mm")</span>
+                            </div>
+                            <div class="message-text">@msg.Content</div>
+                        </div>
+                    </div>
+                }
+                @if (_messages.Count == 0)
+                {
+                    <div class="no-messages">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                        </svg>
+                        <p>No messages yet. Start the conversation!</p>
+                    </div>
+                }
+            </div>
+
+            @if (_showMembersPanel && _selectedTeamId > 0)
+            {
+                var team = _teams.FirstOrDefault(t => t.Id == _selectedTeamId);
+                <div class="members-panel">
+                    <div class="members-header">
+                        <h4>Members (@team?.Members.Count)</h4>
+                        <button class="btn btn-ghost btn-icon btn-sm" @onclick="() => _showMembersPanel = false">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="members-list">
+                        @if (team?.Members != null)
+                        {
+                            @foreach (var membership in team.Members)
+                            {
+                                var memberAgent = _agents.FirstOrDefault(a => a.Id == membership.AgentId);
+                                if (memberAgent != null)
+                                {
+                                    var memberStatus = GetNetworkAgentStatus(memberAgent.Name);
+                                    <div class="member-item">
+                                        <span class="status-dot @GetStatusClass(memberStatus)"></span>
+                                        <span class="member-name">@memberAgent.Name</span>
+                                        @if (!string.IsNullOrEmpty(memberAgent.Role))
+                                        {
+                                            <span class="member-role">@memberAgent.Role</span>
+                                        }
+                                    </div>
+                                }
+                            }
+                        }
+                    </div>
+                </div>
+            }
+
+            <div class="message-input-area">
+                <input type="text" class="message-input" placeholder="Type a message..."
+                       @bind="_newMessage" @bind:event="oninput"
+                       @onkeydown="HandleKeyDown" />
+                <button class="btn btn-primary" @onclick="SendMessage" disabled="@string.IsNullOrWhiteSpace(_newMessage)">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                    </svg>
+                </button>
+            </div>
+        }
+        else
+        {
+            <div class="no-channel-selected">
+                <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                </svg>
+                <h3>Select a channel</h3>
+                <p>Choose a team or agent to start messaging</p>
+            </div>
+        }
+    </div>
+</div>
+</div>
+
+<style>
+    .messages-layout {
+        display: flex;
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+    }
+
+    .channels-sidebar {
+        width: 260px;
+        background: var(--bg-card);
+        border-right: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        overflow-y: auto;
+    }
+
+    .channels-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 16px;
+        border-bottom: 1px solid var(--border);
+        gap: 8px;
+    }
+
+    .channels-header h3 {
+        font-size: 14px;
+        font-weight: 600;
+        margin: 0;
+        flex: 1;
+    }
+
+    .connection-status {
+        display: flex;
+        align-items: center;
+        padding: 4px 8px;
+        border-radius: var(--radius-full);
+        font-size: 10px;
+    }
+
+    .connection-status .status-indicator {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-right: 4px;
+    }
+
+    .connection-status.connected .status-indicator {
+        background: var(--success);
+        box-shadow: 0 0 6px var(--success);
+    }
+
+    .connection-status.disconnected .status-indicator {
+        background: var(--warning);
+        animation: pulse 1s infinite;
+    }
+
+    .channels-section {
+        padding: 12px 0;
+    }
+
+    .section-label {
+        padding: 8px 16px;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-tertiary);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .channel-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        padding: 8px 16px;
+        background: none;
+        border: none;
+        cursor: pointer;
+        text-align: left;
+        transition: background 0.15s ease;
+        color: var(--text-secondary);
+    }
+
+    .channel-item:hover {
+        background: var(--bg-hover);
+    }
+
+    .channel-item.active {
+        background: var(--bg-active);
+        color: var(--text-primary);
+    }
+
+    .channel-icon {
+        font-weight: 600;
+        color: var(--text-tertiary);
+    }
+
+    .channel-icon.large {
+        font-size: 24px;
+    }
+
+    .channel-name {
+        flex: 1;
+        font-size: 13px;
+    }
+
+    .channel-badge {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+    }
+
+    .dm-role {
+        font-size: 10px;
+        color: var(--text-tertiary);
+    }
+
+    .messages-main {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        background: var(--bg-primary);
+        height: 100%;
+        min-height: 0;
+    }
+
+    .messages-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 16px 24px;
+        border-bottom: 1px solid var(--border);
+        background: var(--bg-card);
+    }
+
+    .messages-header h2 {
+        font-size: 16px;
+        font-weight: 600;
+        margin: 0;
+    }
+
+    .header-info {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    .header-meta {
+        font-size: 12px;
+        color: var(--text-tertiary);
+    }
+
+    .messages-list {
+        flex: 1;
+        overflow-y: auto;
+        padding: 16px 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        min-height: 0;
+    }
+
+    .message {
+        display: flex;
+        gap: 12px;
+        max-width: 80%;
+    }
+
+    .message.own {
+        margin-left: auto;
+        flex-direction: row-reverse;
+    }
+
+    .message-avatar {
+        width: 36px;
+        height: 36px;
+        background: var(--bg-card);
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+    }
+
+    .message-content {
+        background: var(--bg-card);
+        border-radius: var(--radius-lg);
+        padding: 10px 14px;
+        box-shadow: var(--shadow-xs);
+    }
+
+    .message.own .message-content {
+        background: var(--accent);
+        color: white;
+    }
+
+    .message-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 4px;
+    }
+
+    .message-sender {
+        font-weight: 600;
+        font-size: 13px;
+    }
+
+    .message.own .message-sender {
+        color: rgba(255, 255, 255, 0.9);
+    }
+
+    .message-time {
+        font-size: 11px;
+        color: var(--text-tertiary);
+    }
+
+    .message.own .message-time {
+        color: rgba(255, 255, 255, 0.7);
+    }
+
+    .message-text {
+        font-size: 14px;
+        line-height: 1.5;
+    }
+
+    .message-input-area {
+        display: flex;
+        gap: 12px;
+        padding: 16px 24px;
+        border-top: 1px solid var(--border);
+        background: var(--bg-card);
+    }
+
+    .message-input {
+        flex: 1;
+        padding: 12px 16px;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        font-size: 14px;
+        color: var(--text-primary);
+    }
+
+    .message-input:focus {
+        outline: none;
+        border-color: var(--accent);
+    }
+
+    .no-messages, .no-channel-selected {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        color: var(--text-tertiary);
+        text-align: center;
+        gap: 16px;
+    }
+
+    .no-messages svg, .no-channel-selected svg {
+        opacity: 0.4;
+    }
+
+    .no-channel-selected h3 {
+        font-size: 18px;
+        color: var(--text-primary);
+        margin: 0;
+    }
+
+    .no-channel-selected p {
+        margin: 0;
+    }
+
+    .status-dot.large {
+        width: 12px;
+        height: 12px;
+    }
+
+    @@keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+    }
+
+    .header-spacer {
+        flex: 1;
+    }
+
+    .members-panel {
+        width: 240px;
+        border-left: 1px solid var(--border);
+        background: var(--bg-card);
+        display: flex;
+        flex-direction: column;
+    }
+
+    .members-header {
+        padding: 1rem;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .members-header h4 {
+        margin: 0;
+        font-size: 0.9rem;
+        font-weight: 600;
+    }
+
+    .members-list {
+        flex: 1;
+        overflow-y: auto;
+        padding: 0.5rem;
+    }
+
+    .member-item {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.5rem;
+        border-radius: 4px;
+    }
+
+    .member-item:hover {
+        background: var(--bg-hover);
+    }
+
+    .member-name {
+        flex: 1;
+        font-size: 0.9rem;
+    }
+
+    .member-role {
+        font-size: 0.75rem;
+        color: var(--text-tertiary);
+    }
+</style>
+
+@code {
+    private List<Team> _teams = new();
+    private List<Agent> _agents = new();
+    private Dictionary<string, NetworkAgentInfo> _networkAgents = new();
+    private List<MessageViewModel> _messages = new();
+    private int _selectedTeamId = 0;
+    private int _selectedAgentId = 0;
+    private string _selectedNetworkAgentName = "";
+    private int _currentAgentId = 1;
+    private string _newMessage = "";
+    private bool _showNewChannel = false;
+    private bool _showMembersPanel = false;
+    private ElementReference _messagesContainer;
+    private bool _isConnected = false;
+    private string _currentAgentName = "WebUI";
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Load local data
+        await LoadData();
+
+        // Subscribe to in-process events for real-time updates
+        NetworkEvents.OnMessageReceived += HandleMessageReceived;
+        NetworkEvents.OnAgentStatusChanged += HandleAgentStatusChanged;
+
+        // Connect to the network API
+        try
+        {
+            _isConnected = await AgentNetwork.ConnectAsync(_currentAgentName);
+        }
+        catch
+        {
+            _isConnected = false;
+        }
+
+        // Load network agents
+        await LoadNetworkAgents();
+    }
+
+    private void HandleMessageReceived(MessageEventArgs e)
+    {
+        InvokeAsync(() =>
+        {
+            // Check if this message is relevant to the current view
+            if (_selectedTeamId > 0)
+            {
+                var selectedTeam = _teams.FirstOrDefault(t => t.Id == _selectedTeamId);
+                if (selectedTeam != null && !e.IsDirectMessage && e.GroupName == selectedTeam.Name)
+                {
+                    AddMessageToView(e.From, e.Content, e.Timestamp);
+                }
+            }
+            else if (_selectedAgentId > 0)
+            {
+                var selectedAgent = _agents.FirstOrDefault(a => a.Id == _selectedAgentId);
+                if (selectedAgent != null && e.IsDirectMessage)
+                {
+                    if ((e.From == selectedAgent.Name && e.To == _currentAgentName) ||
+                        (e.From == _currentAgentName && e.To == selectedAgent.Name))
+                    {
+                        AddMessageToView(e.From, e.Content, e.Timestamp);
+                    }
+                }
+            }
+            else if (!string.IsNullOrEmpty(_selectedNetworkAgentName) && e.IsDirectMessage)
+            {
+                // Handle messages for network agents not in database
+                if ((e.From == _selectedNetworkAgentName && e.To == _currentAgentName) ||
+                    (e.From == _currentAgentName && e.To == _selectedNetworkAgentName))
+                {
+                    AddMessageToView(e.From, e.Content, e.Timestamp);
+                }
+            }
+            StateHasChanged();
+        });
+    }
+
+    private void AddMessageToView(string from, string content, DateTime timestamp)
+    {
+        var isOwn = from == _currentAgentName;
+        _messages.Add(new MessageViewModel
+        {
+            SenderName = isOwn ? "You" : from,
+            Content = content,
+            Timestamp = timestamp,
+            SenderStatus = GetNetworkAgentStatus(from),
+            IsOwnMessage = isOwn
+        });
+    }
+
+    private void HandleAgentStatusChanged(AgentStatusEventArgs e)
+    {
+        InvokeAsync(() =>
+        {
+            _networkAgents[e.AgentName] = new NetworkAgentInfo
+            {
+                Name = e.AgentName,
+                Status = e.Status,
+                LastSeen = e.Timestamp
+            };
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        NetworkEvents.OnMessageReceived -= HandleMessageReceived;
+        NetworkEvents.OnAgentStatusChanged -= HandleAgentStatusChanged;
+    }
+
+    private async Task LoadData()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _teams = await db.Teams.Include(t => t.Members).Include(t => t.Group).ToListAsync();
+        _agents = await db.Agents.Include(a => a.Group).ToListAsync();
+    }
+
+    private async Task LoadNetworkAgents()
+    {
+        try
+        {
+            var agents = await AgentNetwork.GetAgentsAsync();
+            foreach (var agent in agents)
+            {
+                _networkAgents[agent.Name] = new NetworkAgentInfo
+                {
+                    Name = agent.Name,
+                    Status = agent.Status,
+                    LastSeen = agent.LastSeen
+                };
+            }
+        }
+        catch { }
+    }
+
+    private async Task SelectTeam(int teamId)
+    {
+        _selectedTeamId = teamId;
+        _selectedAgentId = 0;
+        _selectedNetworkAgentName = "";
+        _showMembersPanel = false;
+        await LoadMessages();
+    }
+
+    private async Task SelectAgent(int agentId)
+    {
+        _selectedAgentId = agentId;
+        _selectedTeamId = 0;
+        _selectedNetworkAgentName = "";
+        _showMembersPanel = false;
+        await LoadMessages();
+    }
+
+    private async Task SelectNetworkAgent(string agentName)
+    {
+        _selectedNetworkAgentName = agentName;
+        _selectedTeamId = 0;
+        _selectedAgentId = 0;
+        _showMembersPanel = false;
+        await LoadMessagesForNetworkAgent(agentName);
+    }
+
+    private async Task LoadMessagesForNetworkAgent(string agentName)
+    {
+        try
+        {
+            _messages.Clear();
+            var conversation = await AgentNetwork.GetConversationAsync(agentName, 50);
+            _messages = conversation.Select(m => new MessageViewModel
+            {
+                SenderName = m.From == _currentAgentName ? "You" : m.From,
+                Content = m.Content,
+                Timestamp = m.Timestamp,
+                SenderStatus = GetNetworkAgentStatus(m.From),
+                IsOwnMessage = m.From == _currentAgentName
+            }).OrderBy(m => m.Timestamp).ToList();
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to load messages for network agent: {ex.Message}");
+        }
+    }
+
+    private async Task LoadMessages()
+    {
+        try
+        {
+            _messages.Clear();
+
+            if (_selectedTeamId > 0)
+            {
+                var team = _teams.FirstOrDefault(t => t.Id == _selectedTeamId);
+                if (team != null)
+                {
+                    var networkMessages = await AgentNetwork.GetGroupMessagesAsync(team.Name, 50);
+                    _messages = networkMessages.Select(m => new MessageViewModel
+                    {
+                        SenderName = m.From == _currentAgentName ? "You" : m.From,
+                        Content = m.Content,
+                        Timestamp = m.Timestamp,
+                        SenderStatus = GetNetworkAgentStatus(m.From),
+                        IsOwnMessage = m.From == _currentAgentName
+                    }).ToList();
+                }
+            }
+            else if (_selectedAgentId > 0)
+            {
+                var agent = _agents.FirstOrDefault(a => a.Id == _selectedAgentId);
+                if (agent != null)
+                {
+                    var networkMessages = await AgentNetwork.GetConversationAsync(agent.Name, 50);
+                    _messages = networkMessages.Select(m => new MessageViewModel
+                    {
+                        SenderName = m.From == _currentAgentName ? "You" : m.From,
+                        Content = m.Content,
+                        Timestamp = m.Timestamp,
+                        SenderStatus = GetNetworkAgentStatus(m.From),
+                        IsOwnMessage = m.From == _currentAgentName
+                    }).ToList();
+                }
+            }
+
+            _messages = _messages.OrderBy(m => m.Timestamp).ToList();
+        }
+        catch { }
+    }
+
+    private AgentStatus GetNetworkAgentStatus(string agentName)
+    {
+        if (_networkAgents.TryGetValue(agentName, out var agent))
+        {
+            return agent.Status switch
+            {
+                "online" => AgentStatus.Online,
+                "working" => AgentStatus.Working,
+                _ => AgentStatus.Offline
+            };
+        }
+        return AgentStatus.Offline;
+    }
+
+    private async Task SendMessage()
+    {
+        if (string.IsNullOrWhiteSpace(_newMessage)) return;
+
+        var messageContent = _newMessage;
+        _newMessage = "";
+
+        try
+        {
+            bool success = false;
+
+            if (_selectedTeamId > 0)
+            {
+                var team = _teams.FirstOrDefault(t => t.Id == _selectedTeamId);
+                if (team != null)
+                {
+                    success = await AgentNetwork.SendGroupMessageAsync(team.Name, messageContent);
+                    // Message will be added via event handler
+                }
+            }
+            else if (_selectedAgentId > 0)
+            {
+                var agent = _agents.FirstOrDefault(a => a.Id == _selectedAgentId);
+                if (agent != null)
+                {
+                    success = await AgentNetwork.SendDirectMessageAsync(agent.Name, messageContent);
+                    // Message will be added via event handler
+                }
+            }
+            else if (!string.IsNullOrEmpty(_selectedNetworkAgentName))
+            {
+                success = await AgentNetwork.SendDirectMessageAsync(_selectedNetworkAgentName, messageContent);
+                // Message will be added via event handler
+            }
+        }
+        catch { }
+
+        StateHasChanged();
+    }
+
+    private async Task HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !e.ShiftKey)
+        {
+            await SendMessage();
+        }
+    }
+
+    private string GetStatusClass(AgentStatus status) => status switch
+    {
+        AgentStatus.Online => "status-online",
+        AgentStatus.Working => "status-working",
+        AgentStatus.Error => "status-error",
+        _ => "status-offline"
+    };
+
+    private class MessageViewModel
+    {
+        public string SenderName { get; set; } = "";
+        public AgentStatus SenderStatus { get; set; }
+        public string Content { get; set; } = "";
+        public DateTime Timestamp { get; set; }
+        public bool IsOwnMessage { get; set; }
+    }
+
+    private class NetworkAgentInfo
+    {
+        public string Name { get; set; } = "";
+        public string Status { get; set; } = "offline";
+        public DateTime LastSeen { get; set; }
+    }
+}
